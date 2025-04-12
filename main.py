@@ -620,13 +620,12 @@ if st.session_state['search_pressed'] and st.session_state['query']:
                     # Add the bio section to the HTML output
                     html_output += bio_html
                     
-                    # Add industry experience if available
-                    if bio and bio.get('industry_experience'):
-                        html_output += f'<div class="industry-experience"><strong>Industry Experience:</strong> {bio["industry_experience"]}</div>'
+                    # REMOVED: Industry experience section removed as requested
+                    # if bio and bio.get('industry_experience'):
+                    #     html_output += f'<div class="industry-experience"><strong>Industry Experience:</strong> {bio["industry_experience"]}</div>'
                     
-                    # Add the rest of the card
+                    # Add the rest of the card - REMOVED billable rate and recent client information
                     html_output += f"""
-                        <div class="billable-rate">Rate: {lawyer['billable_rate']} | Recent Client: {lawyer['last_client']}</div>
                         <div style="margin-top: 10px;">
                             <strong>Relevant Expertise:</strong><br/>
                             {"".join([f'<span class="skill-tag">{skill["skill"]}: {skill["value"]}</span>' for skill in matched_skills])}
@@ -704,5 +703,5 @@ st.markdown("---")
 st.markdown(
     "This internal tool uses self-reported expertise from 64 lawyers who distributed 120 points across 167 different legal skills. "
     "Results are sorted alphabetically and matches are based on keyword relevance and self-reported skill points. "
-    "Last updated: February 25, 2025"
+    "Last updated: April 12, 2025"
 )
