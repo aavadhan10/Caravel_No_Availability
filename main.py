@@ -16,26 +16,70 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Initialize Supabase client
+# Direct initialization without using st.secrets
 def init_supabase():
     try:
-        supabase_url = st.secrets["supabase"]["url"]
-        supabase_key = st.secrets["supabase"]["key"]
+        # Hardcoded credentials (not ideal, but will help for testing)
+        supabase_url = "https://inhokxxeswrjleibzqyw.supabase.co"
+        supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVjkueyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImluaG9reHhlc3dyamxlaWJ6cXl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTMxNDk5NDIsImV4cCI6MjAyODcyNTk0Mn0.eyJpc3MiOiJzd"
         
+        # Try getting from environment variables first (more secure)
+        if 'SUPABASE_URL' in os.environ and 'SUPABASE_KEY' in os.environ:
+            supabase_url = os.environ.get('SUPABASE_URL')
+            supabase_key = os.environ.get('SUPABASE_KEY')
+        
+        # Alternatively, try to get from st.secrets if available
+        try:
+            if 'supabase' in st.secrets:
+                supabase_url = st.secrets["supabase"]["url"]
+                supabase_key = st.secrets["supabase"]["key"]
+        except:
+            # Just use the hardcoded credentials if secrets aren't available
+            pass
+            
+        # Initialize the client
         supabase: Client = create_client(supabase_url, supabase_key)
         return supabase
     except Exception as e:
-        st.error(f"Error initializing Supabase: {e}")
+        st.error(f"Error initializing Supabase: {str(e)}")
         return None
 
 # Initialize Supabase client
 supabase = init_supabase()
 
+# Define the admin password (again, not ideal but will help for testing)
+ADMIN_PASSWORD = "minirani"
+
+# Function to check admin password
+def is_admin_password_valid(password):
+    # Try getting from environment variables first
+    if 'ADMIN_PASSWORD' in os.environ:
+        return password == os.environ.get('ADMIN_PASSWORD')
+    
+    # Try getting from st.secrets if available
+    try:
+        if 'supabase' in st.secrets and 'admin_password' in st.secrets["supabase"]:
+            return password == st.secrets["supabase"]["admin_password"]
+    except:
+        pass
+    
+    # Fallback to hardcoded password
+    return password == ADMIN_PASSWORD
+
 # Function to save feedback to Supabase
 def save_feedback_to_supabase(feedback_data):
+    if not supabase:
+        st.error("Supabase connection not available.")
+        return {"success": False, "message": "Database connection not available"}
+    
     try:
         # Insert feedback into 'feedback' table
         response = supabase.table('feedback').insert(feedback_data).execute()
+        
+        # Check for errors
+        if hasattr(response, 'error') and response.error:
+            return {"success": False, "message": response.error}
+        
         return {"success": True, "message": "Feedback saved to database", "id": response.data[0].get('id') if response.data else None}
     except Exception as e:
         st.error(f"Error saving feedback: {e}")
@@ -43,9 +87,19 @@ def save_feedback_to_supabase(feedback_data):
 
 # Function to get feedback from Supabase
 def get_feedback_from_supabase(limit=50):
+    if not supabase:
+        st.error("Supabase connection not available.")
+        return []
+    
     try:
         # Get feedback from 'feedback' table
         response = supabase.table('feedback').select('*').order('created_at', desc=True).limit(limit).execute()
+        
+        # Check for errors
+        if hasattr(response, 'error') and response.error:
+            st.error(f"Error fetching feedback: {response.error}")
+            return []
+        
         return response.data
     except Exception as e:
         st.error(f"Error fetching feedback: {e}")
@@ -538,7 +592,15 @@ Format your response in JSON like this:
 
 # Function to call Claude API using requests instead of anthropic client
 def call_claude_api(prompt):
-    api_key = st.secrets.get("anthropic", {}).get("api_key", "YOUR_API_KEY_HERE")
+    # Try to get API key from environment variables or secrets
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "YOUR_API_KEY_HERE")
+    
+    # Try secrets if available
+    try:
+        if 'anthropic' in st.secrets and 'api_key' in st.secrets["anthropic"]:
+            api_key = st.secrets["anthropic"]["api_key"]
+    except:
+        pass
     
     # Handle the case where no API key is provided
     if api_key == "YOUR_API_KEY_HERE":
@@ -707,7 +769,7 @@ def show_admin_dashboard():
     else:
         st.warning("Feedback data format is not as expected.")
 
-# Add an admin mode toggle to the sidebar
+# Updated admin mode function
 def add_admin_mode():
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Admin Options")
@@ -715,7 +777,7 @@ def add_admin_mode():
     # Admin login
     admin_password = st.sidebar.text_input("Admin Password", type="password")
     
-    if admin_password == st.secrets.get("supabase", {}).get("admin_password", "admin123"):
+    if is_admin_password_valid(admin_password):
         st.session_state.admin_mode = True
         st.sidebar.success("Admin mode activated")
         
@@ -934,7 +996,7 @@ else:
     # Footer
     st.markdown("---")
     st.markdown(
-        "This internal tool uses self-reported expertise from 84 lawyers who distributed 120 points across 167 different legal skills. "
+        "This internal tool uses self-reported expertise from 64 lawyers who distributed 120 points across 167 different legal skills. "
         "Results are sorted alphabetically and matches are based on keyword relevance and self-reported skill points. "
         "Last updated: April 12, 2025"
     )
