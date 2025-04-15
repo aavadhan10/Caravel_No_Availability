@@ -511,16 +511,16 @@ data = load_lawyer_data()
 
 # Preset queries
 preset_queries = [
-    "Privacy compliance and cross-border data transfers",
-    "Securities regulation and capital markets",
-    "Technology licensing and SaaS contracts",
-    "Startup funding and equity compensation",
-    "Employment issues and workplace discrimination",
-    "Healthcare compliance regulations in Canada",
-    "Intellectual property protection and licensing",
-    "Environmental compliance in British Columbia",
+    "M&A without tech companies",
+    "Privacy compliance",
+    "Startup law",
+    "Employment issues",
+    "Intellectual property protection",
+    "Employment termination reviews",
+    "Incorporation and corporate record keeping",
+    "Healthcare compliance regulations",
     "Fintech regulatory compliance",
-    "M&A for tech companies"
+    "Service agreements, including SaaS contracts"
 ]
 
 # Query input section
