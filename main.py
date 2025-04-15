@@ -21,7 +21,7 @@ def init_supabase():
     try:
         # Hardcoded credentials (not ideal, but will help for testing)
         supabase_url = "https://inhokxxeswrjleibzqyw.supabase.co"
-        supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVjkueyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImluaG9reHhlc3dyamxlaWJ6cXl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTMxNDk5NDIsImV4cCI6MjAyODcyNTk0Mn0.eyJpc3MiOiJzd"
+        supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImluaG9reHhlc3dyamxlaWJ6cXl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDQ3NDY3OTksImV4cCI6MjA2MDMyMjc5OX0.hHjGAgAw1E-bUiZ00hVGIET3c5U6xEpVKCmc_5R4niI"
         
         # Try getting from environment variables first (more secure)
         if 'SUPABASE_URL' in os.environ and 'SUPABASE_KEY' in os.environ:
