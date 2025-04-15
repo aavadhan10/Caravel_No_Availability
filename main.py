@@ -972,12 +972,12 @@ else:
             st.markdown('</div>', unsafe_allow_html=True)
             
             # Quick stats
-            st.markdown("### Firm Resource Overview")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Lawyers", len(data['lawyers']))
-            with col2:
-                st.metric("Expertise Areas", len(data['unique_skills']))
+            #st.markdown("### Firm Resource Overview")
+           # col1, col2 = st.columns(2)
+            #with col1:
+                #st.metric("Total Lawyers", len(data['lawyers']))
+            #with col2:
+                #st.metric("Expertise Areas", len(data['unique_skills']))
             
             st.markdown("### Instructions for Matching")
             st.markdown("""
