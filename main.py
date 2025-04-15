@@ -6,6 +6,7 @@ import requests
 import json
 import re
 from functools import lru_cache
+from supabase import create_client, Client
 
 # Page Configuration
 st.set_page_config(
@@ -14,6 +15,41 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Initialize Supabase client
+def init_supabase():
+    try:
+        supabase_url = st.secrets["supabase"]["url"]
+        supabase_key = st.secrets["supabase"]["key"]
+        
+        supabase: Client = create_client(supabase_url, supabase_key)
+        return supabase
+    except Exception as e:
+        st.error(f"Error initializing Supabase: {e}")
+        return None
+
+# Initialize Supabase client
+supabase = init_supabase()
+
+# Function to save feedback to Supabase
+def save_feedback_to_supabase(feedback_data):
+    try:
+        # Insert feedback into 'feedback' table
+        response = supabase.table('feedback').insert(feedback_data).execute()
+        return {"success": True, "message": "Feedback saved to database", "id": response.data[0].get('id') if response.data else None}
+    except Exception as e:
+        st.error(f"Error saving feedback: {e}")
+        return {"success": False, "message": str(e)}
+
+# Function to get feedback from Supabase
+def get_feedback_from_supabase(limit=50):
+    try:
+        # Get feedback from 'feedback' table
+        response = supabase.table('feedback').select('*').order('created_at', desc=True).limit(limit).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Error fetching feedback: {e}")
+        return []
 
 # CSS for styling
 st.markdown("""
@@ -155,6 +191,12 @@ if 'query' not in st.session_state:
     st.session_state['query'] = ""
 if 'search_pressed' not in st.session_state:
     st.session_state['search_pressed'] = False
+if 'feedback_text' not in st.session_state:
+    st.session_state.feedback_text = ""
+if 'last_saved_feedback' not in st.session_state:
+    st.session_state.last_saved_feedback = ""
+if 'feedback_saved' not in st.session_state:
+    st.session_state.feedback_saved = False
 
 # Helper function to set the query and trigger search
 def set_query(text):
@@ -334,14 +376,6 @@ def combine_lawyer_data(skills_data, bio_data):
         'unique_skills': skills_data['unique_skills']
     }
 
-# Function to get top skills for a lawyer
-def get_top_skills(lawyer, limit=5):
-    return sorted(
-        [{'skill': skill, 'value': value} for skill, value in lawyer['skills'].items()],
-        key=lambda x: x['value'],
-        reverse=True
-    )[:limit]
-
 # Updated match_lawyers function with improved matching logic
 def match_lawyers(data, query, top_n=10):  # Changed from 5 to 10
     if not data:
@@ -504,7 +538,7 @@ Format your response in JSON like this:
 
 # Function to call Claude API using requests instead of anthropic client
 def call_claude_api(prompt):
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "YOUR_API_KEY_HERE")
+    api_key = st.secrets.get("anthropic", {}).get("api_key", "YOUR_API_KEY_HERE")
     
     # Handle the case where no API key is provided
     if api_key == "YOUR_API_KEY_HERE":
@@ -573,231 +607,334 @@ def call_claude_api(prompt):
         # Return a fallback response
         return {"error": f"API error: {str(e)}"}
 
-# Function to add feedback button
-def add_feedback_button():
+# Real-time feedback function with Supabase integration
+def add_realtime_feedback():
     st.markdown("---")
     st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
     st.markdown('<div class="feedback-title">Provide Feedback</div>', unsafe_allow_html=True)
+    
+    # Use a callback to update feedback in real-time
+    def on_feedback_change():
+        # Only save to Supabase if feedback actually changed and is not empty
+        if st.session_state.feedback_text and st.session_state.feedback_text != st.session_state.last_saved_feedback:
+            # Create feedback data object
+            feedback_data = {
+                "query": st.session_state.get('query', ''),
+                "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "feedback": st.session_state.feedback_text,
+                "user_email": st.session_state.get('user_email', 'anonymous'),
+                "user_role": "partner",
+                "lawyer_results": json.dumps([m['lawyer']['name'] for m in matches]) if 'matches' in globals() else "[]"
+            }
+            
+            # Save to Supabase
+            result = save_feedback_to_supabase(feedback_data)
+            
+            if result['success']:
+                st.session_state.feedback_saved = True
+                st.session_state.last_saved_feedback = st.session_state.feedback_text
+                st.session_state.last_feedback_id = result.get('id')
+            else:
+                st.session_state.feedback_saved = False
+                st.session_state.feedback_error = result.get('message')
+    
+    # Optional email field for feedback attribution
+    user_email = st.text_input(
+        "Your email (optional):",
+        value=st.session_state.get('user_email', ''),
+        key="user_email_input",
+        placeholder="Enter your email to associate with feedback"
+    )
+    
+    # Store email in session state
+    st.session_state.user_email = user_email
+    
+    # Create a text area that calls the callback when changed
     feedback = st.text_area(
         "Help us improve our lawyer matching system:",
+        value=st.session_state.feedback_text,
+        key="feedback_input",
+        on_change=on_feedback_change,
         height=100,
         placeholder="Please share your thoughts on the search results or suggest improvements..."
     )
     
-    if st.button("Submit Feedback", type="primary"):
-        # In a real implementation, this would save to a database
-        st.success("Thank you for your feedback! It will help us improve the matching algorithm.")
-        
-        # For demonstration, we'll just display what would be saved
-        if feedback:
-            feedback_data = {
-                "query": st.session_state.get('query', ''),
-                "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "feedback": feedback
-            }
-            st.json(feedback_data)
+    # Update the feedback text in session state
+    st.session_state.feedback_text = feedback
+    
+    # If there's feedback, show it's being saved in real-time
+    if feedback:
+        # If feedback saved successfully
+        if st.session_state.get('feedback_saved', False):
+            # Display a success message
+            st.success("✓ Feedback saved automatically")
     
     st.markdown('</div>', unsafe_allow_html=True)
+
+# Admin dashboard for viewing feedback
+def show_admin_dashboard():
+    st.markdown("## Feedback Dashboard")
+    
+    # Get feedback data
+    feedback_data = get_feedback_from_supabase(limit=50)
+    
+    if not feedback_data:
+        st.info("No feedback data available.")
+        return
+    
+    # Display feedback in a table
+    st.markdown("### Recent Feedback")
+    
+    # Convert to DataFrame for easier display
+    if isinstance(feedback_data, list) and feedback_data:
+        df = pd.DataFrame(feedback_data)
+        
+        # Format timestamp
+        if 'timestamp' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Display the DataFrame
+        st.dataframe(df)
+        
+        # Allow downloading as CSV
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label="Download Feedback as CSV",
+            data=csv,
+            file_name="feedback_data.csv",
+            mime="text/csv"
+        )
+    else:
+        st.warning("Feedback data format is not as expected.")
+
+# Add an admin mode toggle to the sidebar
+def add_admin_mode():
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Admin Options")
+    
+    # Admin login
+    admin_password = st.sidebar.text_input("Admin Password", type="password")
+    
+    if admin_password == st.secrets.get("supabase", {}).get("admin_password", "admin123"):
+        st.session_state.admin_mode = True
+        st.sidebar.success("Admin mode activated")
+        
+        # Admin actions
+        if st.sidebar.button("View Feedback Dashboard"):
+            st.session_state.show_admin_dashboard = True
+    else:
+        st.session_state.admin_mode = False
+
+# Add admin mode to sidebar
+add_admin_mode()
 
 # Main app layout
 st.title("⚖️ Legal Expert Finder")
 st.markdown("Match client legal needs with the right lawyer based on expertise")
 
-# Load data
-data = load_lawyer_data()
+# Check if admin dashboard should be shown
+if st.session_state.get('show_admin_dashboard', False) and st.session_state.get('admin_mode', False):
+    show_admin_dashboard()
+    # Add button to return to main app
+    if st.button("Return to Main App"):
+        st.session_state.show_admin_dashboard = False
+        st.experimental_rerun()
+else:
+    # Load data
+    data = load_lawyer_data()
 
-# Updated preset queries - changed "M&A without tech companies" to just "M&A"
-preset_queries = [
-    "M&A",  # Updated from "M&A without tech companies"
-    "Privacy compliance",
-    "Startup law",
-    "Employment issues",
-    "Intellectual property protection",
-    "Employment termination reviews",
-    "Incorporation and corporate record keeping",
-    "Healthcare compliance regulations",
-    "Fintech regulatory compliance",
-    "Service agreements, including SaaS contracts"
-]
+    # Updated preset queries - changed "M&A without tech companies" to just "M&A"
+    preset_queries = [
+        "M&A",  # Updated from "M&A without tech companies"
+        "Privacy compliance",
+        "Startup law",
+        "Employment issues",
+        "Intellectual property protection",
+        "Employment termination reviews",
+        "Incorporation and corporate record keeping",
+        "Healthcare compliance regulations",
+        "Fintech regulatory compliance",
+        "Service agreements, including SaaS contracts"
+    ]
 
-# Query input section
-query = st.text_area(
-    "Describe client's legal needs in detail:", 
-    value=st.session_state['query'],
-    height=100,
-    placeholder="Example: Client needs a lawyer with blockchain governance experience for cross-border cryptocurrency transactions",
-    key="query_input"
-)
+    # Query input section
+    query = st.text_area(
+        "Describe client's legal needs in detail:", 
+        value=st.session_state['query'],
+        height=100,
+        placeholder="Example: Client needs a lawyer with blockchain governance experience for cross-border cryptocurrency transactions",
+        key="query_input"
+    )
 
-# Preset query buttons in rows of 3
-st.markdown("### Common Client Needs")
-cols = st.columns(3)
-for i, preset_query in enumerate(preset_queries):
-    col_idx = i % 3
-    with cols[col_idx]:
-        if st.button(preset_query, key=f"preset_{i}"):
-            set_query(preset_query)
+    # Preset query buttons in rows of 3
+    st.markdown("### Common Client Needs")
+    cols = st.columns(3)
+    for i, preset_query in enumerate(preset_queries):
+        col_idx = i % 3
+        with cols[col_idx]:
+            if st.button(preset_query, key=f"preset_{i}"):
+                set_query(preset_query)
 
-# Update query in session state from text area
-if query:
-    st.session_state['query'] = query
+    # Update query in session state from text area
+    if query:
+        st.session_state['query'] = query
 
-# Search button
-search_pressed = st.button("🔍 Find Matching Lawyers", type="primary", use_container_width=True)
-if search_pressed:
-    st.session_state['search_pressed'] = True
+    # Search button
+    search_pressed = st.button("🔍 Find Matching Lawyers", type="primary", use_container_width=True)
+    if search_pressed:
+        st.session_state['search_pressed'] = True
 
-# Display results when search is pressed
-if st.session_state['search_pressed'] and st.session_state['query']:
-    with st.spinner("Matching client needs with our legal experts..."):
-        # Get matches
-        matches = match_lawyers(data, st.session_state['query'])
-        
-        if not matches:
-            st.warning("No matching lawyers found. Please try a different query.")
-        else:
-            # Call Claude API for reasoning
-            claude_prompt = format_claude_prompt(st.session_state['query'], matches)
-            reasoning = call_claude_api(claude_prompt)
+    # Display results when search is pressed
+    if st.session_state['search_pressed'] and st.session_state['query']:
+        with st.spinner("Matching client needs with our legal experts..."):
+            # Get matches
+            matches = match_lawyers(data, st.session_state['query'])
             
-            # Display results
-            st.markdown("## Matching Legal Experts")
-            st.markdown(f"Found {len(matches)} lawyers matching client needs:")
-            
-            # Sort alphabetically for display (not by score)
-            sorted_matches = sorted(matches, key=lambda x: x['lawyer']['name'])
-            
-            for match in sorted_matches:
-                lawyer = match['lawyer']
-                matched_skills = match['matched_skills']
+            if not matches:
+                st.warning("No matching lawyers found. Please try a different query.")
+            else:
+                # Call Claude API for reasoning
+                claude_prompt = format_claude_prompt(st.session_state['query'], matches)
+                reasoning = call_claude_api(claude_prompt)
                 
-                with st.container():
-                    # Determine style classes
+                # Display results
+                st.markdown("## Matching Legal Experts")
+                st.markdown(f"Found {len(matches)} lawyers matching client needs:")
+                
+                # Sort alphabetically for display (not by score)
+                sorted_matches = sorted(matches, key=lambda x: x['lawyer']['name'])
+                
+                for match in sorted_matches:
+                    lawyer = match['lawyer']
+                    matched_skills = match['matched_skills']
                     
-                    # Get bio data
-                    bio = lawyer['bio'] if 'bio' in lawyer else {}
-                    
-                    # Use raw HTML string concatenation to avoid Streamlit escaping issues
-                    html_output = f"""
-                    <div class="lawyer-card">
-                        <div class="lawyer-name">
-                            {lawyer['name']}
-                        </div>
-                        <div class="lawyer-email">{lawyer['email']}</div>
-                        <div class="practice-area">Practice Area: {lawyer['practice_area']}</div>
-                    """
-                    
-                    # Create biographical info section
-                    bio_html = ""
-                    if bio:
-                        bio_html += '<div class="bio-section">'
-                        if bio.get('level'):
-                            bio_html += f'<div class="bio-level">{bio["level"]}</div>'
+                    with st.container():
+                        # Determine style classes
                         
-                        bio_details = []
-                        if bio.get('call'):
-                            bio_details.append(f'Called to Bar: {bio["call"]}')
-                        if bio.get('jurisdiction'):
-                            bio_details.append(f'Jurisdiction: {bio["jurisdiction"]}')
-                        if bio.get('location'):
-                            bio_details.append(f'Location: {bio["location"]}')
+                        # Get bio data
+                        bio = lawyer['bio'] if 'bio' in lawyer else {}
                         
-                        if bio_details:
-                            bio_html += f'<div class="bio-details">{" | ".join(bio_details)}</div>'
+                        # Use raw HTML string concatenation to avoid Streamlit escaping issues
+                        html_output = f"""
+                        <div class="lawyer-card">
+                            <div class="lawyer-name">
+                                {lawyer['name']}
+                            </div>
+                            <div class="lawyer-email">{lawyer['email']}</div>
+                            <div class="practice-area">Practice Area: {lawyer['practice_area']}</div>
+                        """
+                        
+                        # Create biographical info section
+                        bio_html = ""
+                        if bio:
+                            bio_html += '<div class="bio-section">'
+                            if bio.get('level'):
+                                bio_html += f'<div class="bio-level">{bio["level"]}</div>'
                             
-                        if bio.get('previous_in_house'):
-                            bio_html += f'<div class="bio-experience"><strong>In-House Experience:</strong> {bio["previous_in_house"]}</div>'
-                        if bio.get('previous_firms'):
-                            bio_html += f'<div class="bio-experience"><strong>Previous Firms:</strong> {bio["previous_firms"]}</div>'
-                        if bio.get('education'):
-                            bio_html += f'<div class="bio-education"><strong>Education:</strong> {bio["education"]}</div>'
+                            bio_details = []
+                            if bio.get('call'):
+                                bio_details.append(f'Called to Bar: {bio["call"]}')
+                            if bio.get('jurisdiction'):
+                                bio_details.append(f'Jurisdiction: {bio["jurisdiction"]}')
+                            if bio.get('location'):
+                                bio_details.append(f'Location: {bio["location"]}')
                             
-                        bio_html += '</div>'
-                    
-                    # Add the bio section to the HTML output
-                    html_output += bio_html
-                    
-                    # Add the rest of the card
-                    html_output += f"""
-                        <div style="margin-top: 10px;">
-                            <strong>Relevant Expertise:</strong><br/>
-                            {"".join([f'<span class="skill-tag">{skill["skill"]}: {skill["value"]}</span>' for skill in matched_skills])}
+                            if bio_details:
+                                bio_html += f'<div class="bio-details">{" | ".join(bio_details)}</div>'
+                                
+                            if bio.get('previous_in_house'):
+                                bio_html += f'<div class="bio-experience"><strong>In-House Experience:</strong> {bio["previous_in_house"]}</div>'
+                            if bio.get('previous_firms'):
+                                bio_html += f'<div class="bio-experience"><strong>Previous Firms:</strong> {bio["previous_firms"]}</div>'
+                            if bio.get('education'):
+                                bio_html += f'<div class="bio-education"><strong>Education:</strong> {bio["education"]}</div>'
+                                
+                            bio_html += '</div>'
+                        
+                        # Add the bio section to the HTML output
+                        html_output += bio_html
+                        
+                        # Add the rest of the card
+                        html_output += f"""
+                            <div style="margin-top: 10px;">
+                                <strong>Relevant Expertise:</strong><br/>
+                                {"".join([f'<span class="skill-tag">{skill["skill"]}: {skill["value"]}</span>' for skill in matched_skills])}
+                            </div>
+                            <div class="reasoning-box">
+                                <div class="match-rationale-title">WHY THIS LAWYER IS AN EXCELLENT MATCH:</div>
+                                {reasoning.get(lawyer['name'], 'This lawyer has relevant expertise in the areas described in the client query.')}
+                            </div>
                         </div>
-                        <div class="reasoning-box">
-                            <div class="match-rationale-title">WHY THIS LAWYER IS AN EXCELLENT MATCH:</div>
-                            {reasoning.get(lawyer['name'], 'This lawyer has relevant expertise in the areas described in the client query.')}
-                        </div>
-                    </div>
-                    """
-                    
-                    # Render the HTML
-                    st.markdown(html_output, unsafe_allow_html=True)
+                        """
+                        
+                        # Render the HTML
+                        st.markdown(html_output, unsafe_allow_html=True)
+                
+                # Action buttons for results
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("📧 Email These Matches to Requester", use_container_width=True):
+                        st.success("Match results have been emailed to the requester!")
+                with col2:
+                    if st.button("📆 Schedule Consultation", use_container_width=True):
+                        st.success("Consultation has been scheduled with these lawyers!")
+                
+                # Add real-time feedback
+                add_realtime_feedback()
+
+    # Show exploration section when no search is active
+    if not st.session_state['search_pressed'] or not st.session_state['query']:
+        st.markdown("## Explore Available Legal Expertise")
+        
+        if data:
+            # Create a visual breakdown of legal expertise
+            all_skills = {}
+            for lawyer in data['lawyers']:
+                for skill, value in lawyer['skills'].items():
+                    if skill in all_skills:
+                        all_skills[skill] += value
+                    else:
+                        all_skills[skill] = value
             
-            # Action buttons for results
+            # Get top 20 skills by total points
+            top_skills = sorted(all_skills.items(), key=lambda x: x[1], reverse=True)[:20]
+            
+            # Show bar chart of top skills in scrollable container
+            st.markdown("### Most Common Legal Expertise Areas")
+            st.markdown('<div class="scroll-container">', unsafe_allow_html=True)
+            chart_data = pd.DataFrame({
+                'Skill': [s[0] for s in top_skills],
+                'Total Points': [s[1] for s in top_skills]
+            })
+            st.bar_chart(chart_data.set_index('Skill'))
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # Quick stats
+            st.markdown("### Firm Resource Overview")
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("📧 Email These Matches to Requester", use_container_width=True):
-                    st.success("Match results have been emailed to the requester!")
+                st.metric("Total Lawyers", len(data['lawyers']))
             with col2:
-                if st.button("📆 Schedule Consultation", use_container_width=True):
-                    st.success("Consultation has been scheduled with these lawyers!")
+                st.metric("Expertise Areas", len(data['unique_skills']))
             
-            # Add feedback button
-            add_feedback_button()
+            st.markdown("### Instructions for Matching")
+            st.markdown("""
+            Enter your client's specific legal needs above or select a common query to find matching legal experts. 
+            Be as specific as possible about their requirements, including:
+            
+            - The type of legal expertise needed
+            - Any industry-specific requirements
+            - Geographic considerations (e.g., province-specific needs)
+            - The nature of the legal matter
+            - Timeframe and urgency
+            
+            The system will match the query with lawyers who have self-reported expertise in those areas.
+            """)
 
-# Show exploration section when no search is active
-if not st.session_state['search_pressed'] or not st.session_state['query']:
-    st.markdown("## Explore Available Legal Expertise")
-    
-    if data:
-        # Create a visual breakdown of legal expertise
-        all_skills = {}
-        for lawyer in data['lawyers']:
-            for skill, value in lawyer['skills'].items():
-                if skill in all_skills:
-                    all_skills[skill] += value
-                else:
-                    all_skills[skill] = value
-        
-        # Get top 20 skills by total points
-        top_skills = sorted(all_skills.items(), key=lambda x: x[1], reverse=True)[:20]
-        
-        # Show bar chart of top skills in scrollable container
-        st.markdown("### Most Common Legal Expertise Areas")
-        st.markdown('<div class="scroll-container">', unsafe_allow_html=True)
-        chart_data = pd.DataFrame({
-            'Skill': [s[0] for s in top_skills],
-            'Total Points': [s[1] for s in top_skills]
-        })
-        st.bar_chart(chart_data.set_index('Skill'))
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        # Quick stats
-        st.markdown("### Firm Resource Overview")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Total Lawyers", len(data['lawyers']))
-        with col2:
-            st.metric("Expertise Areas", len(data['unique_skills']))
-        
-        st.markdown("### Instructions for Matching")
-        st.markdown("""
-        Enter your client's specific legal needs above or select a common query to find matching legal experts. 
-        Be as specific as possible about their requirements, including:
-        
-        - The type of legal expertise needed
-        - Any industry-specific requirements
-        - Geographic considerations (e.g., province-specific needs)
-        - The nature of the legal matter
-        - Timeframe and urgency
-        
-        The system will match the query with lawyers who have self-reported expertise in those areas.
-        """)
-
-# Footer
-st.markdown("---")
-st.markdown(
-    "This internal tool uses self-reported expertise from 64 lawyers who distributed 120 points across 167 different legal skills. "
-    "Results are sorted alphabetically and matches are based on keyword relevance and self-reported skill points. "
-    "Last updated: April 12, 2025"
-)
+    # Footer
+    st.markdown("---")
+    st.markdown(
+        "This internal tool uses self-reported expertise from 84 lawyers who distributed 120 points across 167 different legal skills. "
+        "Results are sorted alphabetically and matches are based on keyword relevance and self-reported skill points. "
+        "Last updated: April 12, 2025"
+    )
