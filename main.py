@@ -106,6 +106,28 @@ h1 {
     margin-top: 5px;
     color: #333;
 }
+.feedback-container {
+    background-color: #f0f8ff;
+    border-radius: 10px;
+    padding: 20px;
+    margin-top: 30px;
+    border-left: 5px solid #4682b4;
+}
+.feedback-title {
+    color: #1e4b79;
+    font-size: 18px;
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+.feedback-button {
+    background-color: #1e88e5;
+    color: white;
+    border: none;
+    padding: 10px 15px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-weight: bold;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -320,8 +342,8 @@ def get_top_skills(lawyer, limit=5):
         reverse=True
     )[:limit]
 
-# Function to match lawyers with a query
-def match_lawyers(data, query, top_n=5):
+# Updated match_lawyers function with improved matching logic
+def match_lawyers(data, query, top_n=10):  # Changed from 5 to 10
     if not data:
         return []
     
@@ -330,6 +352,19 @@ def match_lawyers(data, query, top_n=5):
     
     # Test users to exclude
     excluded_users = ["Ankita", "Test", "Tania"]
+    
+    # For M&A queries, expand the search terms
+    if "m&a" in lower_query.lower() or "merger" in lower_query.lower() or "acquisition" in lower_query.lower():
+        expanded_query = lower_query + " acquisitions mergers purchase sale of business"
+        lower_query = expanded_query
+    
+    # Check for multi-criteria queries (like "commercial contracts AND hospitality")
+    query_parts = []
+    if " and " in lower_query or " & " in lower_query:
+        # Split by " and " or " & "
+        query_parts = re.split(r' and | & ', lower_query)
+    else:
+        query_parts = [lower_query]
     
     # Calculate match scores for each lawyer
     matches = []
@@ -340,23 +375,59 @@ def match_lawyers(data, query, top_n=5):
             
         score = 0
         matched_skills = []
+        all_criteria_matched = True if len(query_parts) > 1 else False
         
-        # Check each skill against the query
-        for skill, value in lawyer['skills'].items():
-            skill_lower = skill.lower()
-            if skill_lower in lower_query or any(word in skill_lower for word in lower_query.split()):
-                score += value
-                matched_skills.append({'skill': skill, 'value': value})
+        # Check each query part
+        for query_part in query_parts:
+            part_matched = False
+            
+            # Check each skill against the query part
+            for skill, value in lawyer['skills'].items():
+                skill_lower = skill.lower()
+                
+                # More precise matching - prefer exact matches over partial
+                if skill_lower == query_part.strip():
+                    # Exact match gets higher score
+                    score += value * 2
+                    matched_skills.append({'skill': skill, 'value': value})
+                    part_matched = True
+                elif query_part.strip() in skill_lower:
+                    # Contains match
+                    score += value * 1.5
+                    matched_skills.append({'skill': skill, 'value': value})
+                    part_matched = True
+                elif any(word in skill_lower for word in query_part.split()):
+                    # Word match
+                    score += value
+                    matched_skills.append({'skill': skill, 'value': value})
+                    part_matched = True
+            
+            # For multi-criteria queries, track if each part matched
+            if len(query_parts) > 1 and not part_matched:
+                all_criteria_matched = False
         
+        # For multi-criteria queries, if not all criteria matched, reset score
+        if len(query_parts) > 1 and not all_criteria_matched:
+            score = 0
+            matched_skills = []
+        
+        # Add lawyer to matches if scored
         if score > 0:
+            # Remove duplicate skills
+            unique_skills = {}
+            for skill in matched_skills:
+                skill_name = skill['skill']
+                if skill_name not in unique_skills or skill['value'] > unique_skills[skill_name]['value']:
+                    unique_skills[skill_name] = skill
+            
             matches.append({
                 'lawyer': lawyer,
                 'score': score,
-                'matched_skills': sorted(matched_skills, key=lambda x: x['value'], reverse=True)[:5]
+                'matched_skills': sorted(list(unique_skills.values()), key=lambda x: x['value'], reverse=True)[:5]
             })
     
     # Sort by score and take top N
-    return sorted(matches, key=lambda x: x['score'], reverse=True)[:top_n]
+    return sorted(matches, key=lambda x: x['score'], reverse=True)[:top_n]  # Changed from 5 to 10
 
 # Function to format Claude's analysis prompt
 def format_claude_prompt(query, matches):
@@ -441,7 +512,7 @@ def call_claude_api(prompt):
         try:
             return {
                 match['lawyer']['name']: f"This lawyer has strong expertise in {', '.join([s['skill'] for s in match['matched_skills'][:2]])}, making them highly qualified for this client matter. Their background in {match['lawyer']['bio'].get('practice_areas', 'relevant practice areas')} directly aligns with the client's requirements. With experience at {match['lawyer']['bio'].get('previous_in_house', 'relevant organizations')} and {match['lawyer']['bio'].get('previous_firms', 'law firms')}, they bring practical industry knowledge to the table. Their education from {match['lawyer']['bio'].get('education', 'respected institutions')} provides additional theoretical foundation for handling this matter effectively. They've dedicated significant points to these skills in their self-assessment, indicating deep confidence and capability in these areas."
-                for match in matches[:5]
+                for match in matches[:10]  # Updated to include up to 10 matches
             }
         except NameError:
             # Fallback if 'matches' is not defined in this scope
@@ -502,6 +573,32 @@ def call_claude_api(prompt):
         # Return a fallback response
         return {"error": f"API error: {str(e)}"}
 
+# Function to add feedback button
+def add_feedback_button():
+    st.markdown("---")
+    st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
+    st.markdown('<div class="feedback-title">Provide Feedback</div>', unsafe_allow_html=True)
+    feedback = st.text_area(
+        "Help us improve our lawyer matching system:",
+        height=100,
+        placeholder="Please share your thoughts on the search results or suggest improvements..."
+    )
+    
+    if st.button("Submit Feedback", type="primary"):
+        # In a real implementation, this would save to a database
+        st.success("Thank you for your feedback! It will help us improve the matching algorithm.")
+        
+        # For demonstration, we'll just display what would be saved
+        if feedback:
+            feedback_data = {
+                "query": st.session_state.get('query', ''),
+                "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "feedback": feedback
+            }
+            st.json(feedback_data)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
 # Main app layout
 st.title("⚖️ Legal Expert Finder")
 st.markdown("Match client legal needs with the right lawyer based on expertise")
@@ -509,9 +606,9 @@ st.markdown("Match client legal needs with the right lawyer based on expertise")
 # Load data
 data = load_lawyer_data()
 
-# Preset queries
+# Updated preset queries - changed "M&A without tech companies" to just "M&A"
 preset_queries = [
-    "M&A without tech companies",
+    "M&A",  # Updated from "M&A without tech companies"
     "Privacy compliance",
     "Startup law",
     "Employment issues",
@@ -620,11 +717,7 @@ if st.session_state['search_pressed'] and st.session_state['query']:
                     # Add the bio section to the HTML output
                     html_output += bio_html
                     
-                    # REMOVED: Industry experience section removed as requested
-                    # if bio and bio.get('industry_experience'):
-                    #     html_output += f'<div class="industry-experience"><strong>Industry Experience:</strong> {bio["industry_experience"]}</div>'
-                    
-                    # Add the rest of the card - REMOVED billable rate and recent client information
+                    # Add the rest of the card
                     html_output += f"""
                         <div style="margin-top: 10px;">
                             <strong>Relevant Expertise:</strong><br/>
@@ -648,6 +741,9 @@ if st.session_state['search_pressed'] and st.session_state['query']:
             with col2:
                 if st.button("📆 Schedule Consultation", use_container_width=True):
                     st.success("Consultation has been scheduled with these lawyers!")
+            
+            # Add feedback button
+            add_feedback_button()
 
 # Show exploration section when no search is active
 if not st.session_state['search_pressed'] or not st.session_state['query']:
@@ -679,8 +775,8 @@ if not st.session_state['search_pressed'] or not st.session_state['query']:
         # Quick stats
         st.markdown("### Firm Resource Overview")
         col1, col2 = st.columns(2)
-       # with col1:
-            #st.metric("Total Lawyers", len(data['lawyers']))
+        with col1:
+            st.metric("Total Lawyers", len(data['lawyers']))
         with col2:
             st.metric("Expertise Areas", len(data['unique_skills']))
         
