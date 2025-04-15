@@ -996,7 +996,7 @@ else:
     # Footer
     st.markdown("---")
     st.markdown(
-        "This internal tool uses self-reported expertise from 64 lawyers who distributed 120 points across 167 different legal skills. "
+        "This internal tool uses self-reported expertise from 84 lawyers who distributed 120 points across 167 different legal skills. "
         "Results are sorted alphabetically and matches are based on keyword relevance and self-reported skill points. "
         "Last updated: April 12, 2025"
     )
