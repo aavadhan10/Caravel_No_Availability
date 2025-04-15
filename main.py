@@ -48,7 +48,7 @@ def init_supabase():
 supabase = init_supabase()
 
 # Define the admin password (again, not ideal but will help for testing)
-ADMIN_PASSWORD = "minirani"
+ADMIN_PASSWORD = "CaravelAI2025"
 
 # Function to check admin password
 def is_admin_password_valid(password):
