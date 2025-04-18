@@ -218,6 +218,16 @@ h1 {
     cursor: pointer;
     font-weight: bold;
 }
+.bio-match-tag {
+    background-color: #ffd54f;
+    border-radius: 15px;
+    padding: 3px 8px;
+    margin-right: 5px;
+    display: inline-block;
+    font-size: 12px;
+    color: #5d4037;
+    font-weight: bold;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -225,7 +235,7 @@ h1 {
 st.sidebar.title("⚖️ Legal Expert Finder")
 st.sidebar.title("About")
 st.sidebar.info(
-    "This internal tool helps match client legal needs with the right lawyer based on self-reported expertise. "
+    "This internal tool helps match client legal needs with the right lawyer based on expertise and biographical information. "
     "Designed for partners and executive assistants to quickly find the best internal resource for client requirements."
 )
 st.sidebar.markdown("---")
@@ -237,7 +247,7 @@ recent_queries = [
     "Employment dispute in Ontario", 
     "M&A due diligence for tech acquisition",
     "Privacy compliance for healthcare app",
-    "Commercial lease agreement review"
+    "Commercial contracts & hospitality"
 ]
 
 # Initialize session state variables
@@ -251,6 +261,18 @@ if 'last_saved_feedback' not in st.session_state:
     st.session_state.last_saved_feedback = ""
 if 'feedback_saved' not in st.session_state:
     st.session_state.feedback_saved = False
+if 'expected_lawyers' not in st.session_state:
+    st.session_state.expected_lawyers = ""
+if 'incorrect_lawyers' not in st.session_state:
+    st.session_state.incorrect_lawyers = ""
+if 'rating' not in st.session_state:
+    st.session_state.rating = ""
+if 'user_role' not in st.session_state:
+    st.session_state.user_role = "Partner"
+if 'show_admin_dashboard' not in st.session_state:
+    st.session_state.show_admin_dashboard = False
+if 'admin_mode' not in st.session_state:
+    st.session_state.admin_mode = False
 
 # Helper function to set the query and trigger search
 def set_query(text):
@@ -282,7 +304,10 @@ def load_lawyer_data():
         # Combine the data
         combined_data = combine_lawyer_data(skills_data, bio_data)
         
-        return combined_data
+        # Verify and correct practice areas
+        verified_data = verify_practice_areas(combined_data)
+        
+        return verified_data
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return None
@@ -430,7 +455,63 @@ def combine_lawyer_data(skills_data, bio_data):
         'unique_skills': skills_data['unique_skills']
     }
 
-# Updated match_lawyers function with improved matching logic
+# Function to verify practice areas against biographical data
+def verify_practice_areas(data):
+    if not data:
+        return data
+    
+    # Create a corrected version of the data
+    corrected_data = {
+        'lawyers': [],
+        'skill_map': data['skill_map'],
+        'unique_skills': data['unique_skills']
+    }
+    
+    # Manual corrections for known issues
+    manual_corrections = {
+        'Nikki': 'Corporate',  # Corrected from Tax
+        'Frank': 'Corporate',  # Corrected from IP
+        # Add more corrections as needed
+    }
+    
+    # Process each lawyer to update practice areas based on bio data
+    for lawyer in data['lawyers']:
+        lawyer_copy = lawyer.copy()  # Create a copy to modify
+        
+        # Check if lawyer's name contains any key in manual_corrections
+        for name_part, correction in manual_corrections.items():
+            if name_part in lawyer['name']:
+                lawyer_copy['practice_area'] = correction
+                break
+        
+        # If no manual correction and bio data is available, try to infer practice area
+        if 'bio' in lawyer_copy and lawyer_copy['bio'].get('practice_areas'):
+            practice_areas = lawyer_copy['bio']['practice_areas'].lower()
+            
+            # Simple mapping of bio practice areas to main categories
+            if 'corporate' in practice_areas or 'commercial' in practice_areas or 'business' in practice_areas:
+                lawyer_copy['practice_area'] = 'Corporate'
+            elif 'litigation' in practice_areas or 'dispute' in practice_areas:
+                lawyer_copy['practice_area'] = 'Litigation'
+            elif 'intellectual property' in practice_areas or 'patent' in practice_areas or 'trademark' in practice_areas:
+                lawyer_copy['practice_area'] = 'IP'
+            elif 'employ' in practice_areas or 'labor' in practice_areas or 'labour' in practice_areas:
+                lawyer_copy['practice_area'] = 'Employment'
+            elif 'privacy' in practice_areas or 'data' in practice_areas:
+                lawyer_copy['practice_area'] = 'Privacy'
+            elif 'finance' in practice_areas or 'banking' in practice_areas:
+                lawyer_copy['practice_area'] = 'Finance'
+            elif 'real estate' in practice_areas or 'property' in practice_areas:
+                lawyer_copy['practice_area'] = 'Real Estate'
+            elif 'tax' in practice_areas:
+                lawyer_copy['practice_area'] = 'Tax'
+            # Keep original if no match
+        
+        corrected_data['lawyers'].append(lawyer_copy)
+    
+    return corrected_data
+
+# Improved match_lawyers function that prioritizes biographical data
 def match_lawyers(data, query, top_n=10):  # Changed from 5 to 10
     if not data:
         return []
@@ -438,11 +519,11 @@ def match_lawyers(data, query, top_n=10):  # Changed from 5 to 10
     # Convert query to lowercase for case-insensitive matching
     lower_query = query.lower()
     
-    # Test users to exclude
-    excluded_users = ["Ankita", "Test", "Tania"]
+    # Test users to exclude - preventing test accounts from appearing in results
+    excluded_users = ["Ankita", "Test", "Tania", "Antoine Malek", "Connie Chan", "Michelle Koyle", "Sue Gaudi", "Rose Os"]
     
     # For M&A queries, expand the search terms
-    if "m&a" in lower_query.lower() or "merger" in lower_query.lower() or "acquisition" in lower_query.lower():
+    if "m&a" in lower_query or "merger" in lower_query or "acquisition" in lower_query:
         expanded_query = lower_query + " acquisitions mergers purchase sale of business"
         lower_query = expanded_query
     
@@ -457,17 +538,64 @@ def match_lawyers(data, query, top_n=10):  # Changed from 5 to 10
     # Calculate match scores for each lawyer
     matches = []
     for lawyer in data['lawyers']:
-        # Skip test users
+        # Skip excluded users
         if any(excluded_name in lawyer['name'] for excluded_name in excluded_users):
             continue
             
-        score = 0
+        bio_score = 0
+        skill_score = 0
+        matched_bio_reasons = []
         matched_skills = []
         all_criteria_matched = True if len(query_parts) > 1 else False
         
-        # Check each query part
+        # FIRST: Check biographical data for matches
+        bio = lawyer.get('bio', {})
+        
+        # Create a single text string from all biographical data to search
+        bio_text = " ".join([
+            bio.get('practice_areas', ''),
+            bio.get('expert', ''),
+            bio.get('industry_experience', ''),
+            bio.get('notable_items', ''),
+            bio.get('previous_in_house', ''),
+            bio.get('previous_firms', '')
+        ]).lower()
+        
+        # Check each query part against biographical data
         for query_part in query_parts:
-            part_matched = False
+            part_matched_in_bio = False
+            
+            # Check for exact or partial matches in biographical data
+            if query_part.strip() in bio_text:
+                bio_score += 5  # High score for bio matches
+                
+                # Determine which bio field matched
+                for field, value in bio.items():
+                    if value and query_part.strip() in value.lower():
+                        matched_bio_reasons.append({
+                            'field': field,
+                            'value': value
+                        })
+                        part_matched_in_bio = True
+            
+            # For multi-criteria queries, track if each part matched in bio
+            if not part_matched_in_bio:
+                for word in query_part.split():
+                    if word in bio_text and len(word) > 3:  # Avoid matching small words
+                        bio_score += 2
+                        
+                        # Determine which bio field matched
+                        for field, value in bio.items():
+                            if value and word in value.lower():
+                                matched_bio_reasons.append({
+                                    'field': field,
+                                    'value': value
+                                })
+                                part_matched_in_bio = True
+                                break
+            
+            # SECOND: Check skills data as a cross-reference
+            part_matched_in_skills = False
             
             # Check each skill against the query part
             for skill, value in lawyer['skills'].items():
@@ -476,107 +604,132 @@ def match_lawyers(data, query, top_n=10):  # Changed from 5 to 10
                 # More precise matching - prefer exact matches over partial
                 if skill_lower == query_part.strip():
                     # Exact match gets higher score
-                    score += value * 2
+                    skill_score += value * 1.5
                     matched_skills.append({'skill': skill, 'value': value})
-                    part_matched = True
+                    part_matched_in_skills = True
                 elif query_part.strip() in skill_lower:
                     # Contains match
-                    score += value * 1.5
+                    skill_score += value
                     matched_skills.append({'skill': skill, 'value': value})
-                    part_matched = True
-                elif any(word in skill_lower for word in query_part.split()):
-                    # Word match
-                    score += value
+                    part_matched_in_skills = True
+                elif any(word in skill_lower for word in query_part.split() if len(word) > 3):
+                    # Word match (for words > 3 chars to avoid matching small words)
+                    skill_score += value * 0.5
                     matched_skills.append({'skill': skill, 'value': value})
-                    part_matched = True
+                    part_matched_in_skills = True
             
-            # For multi-criteria queries, track if each part matched
-            if len(query_parts) > 1 and not part_matched:
+            # For multi-criteria queries, check if this part matched in either bio or skills
+            if len(query_parts) > 1 and not (part_matched_in_bio or part_matched_in_skills):
                 all_criteria_matched = False
         
-        # For multi-criteria queries, if not all criteria matched, reset score
+        # For multi-criteria queries, if not all criteria matched, reset scores
         if len(query_parts) > 1 and not all_criteria_matched:
-            score = 0
+            bio_score = 0
+            skill_score = 0
+            matched_bio_reasons = []
             matched_skills = []
         
+        # Calculate final score with bio_score weighted higher
+        final_score = (bio_score * 2) + skill_score
+        
         # Add lawyer to matches if scored
-        if score > 0:
-            # Remove duplicate skills
+        if final_score > 0:
+            # Remove duplicate skills and bio reasons
             unique_skills = {}
             for skill in matched_skills:
                 skill_name = skill['skill']
                 if skill_name not in unique_skills or skill['value'] > unique_skills[skill_name]['value']:
                     unique_skills[skill_name] = skill
             
+            unique_bio_reasons = {}
+            for reason in matched_bio_reasons:
+                field = reason['field']
+                if field not in unique_bio_reasons:
+                    unique_bio_reasons[field] = reason
+            
             matches.append({
                 'lawyer': lawyer,
-                'score': score,
+                'score': final_score,
+                'bio_score': bio_score,
+                'skill_score': skill_score,
+                'matched_bio_reasons': list(unique_bio_reasons.values()),
                 'matched_skills': sorted(list(unique_skills.values()), key=lambda x: x['value'], reverse=True)[:5]
             })
     
-    # Sort by score and take top N
-    return sorted(matches, key=lambda x: x['score'], reverse=True)[:top_n]  # Changed from 5 to 10
+    # Sort by final score and take top N
+    return sorted(matches, key=lambda x: x['score'], reverse=True)[:top_n]
 
-# Function to format Claude's analysis prompt
+# Updated function to format Claude's analysis prompt with bio prioritization
 def format_claude_prompt(query, matches):
     prompt = f"""
 I need to analyze and provide detailed reasoning for why specific lawyers match a client's legal needs based on their expertise, skills, and background.
 
 Client's Legal Need: "{query}"
 
-Here are the matching lawyers with their skills and biographical information:
+Here are the matching lawyers with their biographical information and skills:
 
 """
     
     for i, match in enumerate(matches, 1):
         lawyer = match['lawyer']
-        skills = match['matched_skills']
-        bio = lawyer['bio']
+        skills = match.get('matched_skills', [])
+        bio_reasons = match.get('matched_bio_reasons', [])
+        bio = lawyer.get('bio', {})
         
         prompt += f"LAWYER {i}: {lawyer['name']}\n"
         prompt += "---------------------------------------------\n"
         
-        # Add skills information
-        prompt += "RELEVANT SKILLS:\n"
-        for skill in skills:
-            prompt += f"- {skill['skill']}: {skill['value']} points\n"
+        # Add matched biographical information FIRST
+        prompt += "PRIMARY MATCHING FACTORS (BIOGRAPHICAL INFORMATION):\n"
+        if bio_reasons:
+            for reason in bio_reasons:
+                field_name = reason['field'].replace('_', ' ').title()
+                prompt += f"- {field_name}: {reason['value']}\n"
         
-        # Add biographical information
-        prompt += "\nBIOGRAPHICAL INFORMATION:\n"
-        if bio['level']:
+        # Add full biographical information
+        prompt += "\nCOMPLETE BIOGRAPHICAL INFORMATION:\n"
+        if bio.get('level'):
             prompt += f"- Level/Title: {bio['level']}\n"
-        if bio['call']:
+        if bio.get('call'):
             prompt += f"- Called to Bar: {bio['call']}\n"
-        if bio['jurisdiction']:
+        if bio.get('jurisdiction'):
             prompt += f"- Jurisdiction: {bio['jurisdiction']}\n"
-        if bio['location']:
+        if bio.get('location'):
             prompt += f"- Location: {bio['location']}\n"
-        if bio['practice_areas']:
+        if bio.get('practice_areas'):
             prompt += f"- Practice Areas: {bio['practice_areas']}\n"
-        if bio['industry_experience']:
+        if bio.get('industry_experience'):
             prompt += f"- Industry Experience: {bio['industry_experience']}\n"
-        if bio['previous_in_house']:
+        if bio.get('previous_in_house'):
             prompt += f"- Previous In-House Experience: {bio['previous_in_house']}\n"
-        if bio['previous_firms']:
+        if bio.get('previous_firms'):
             prompt += f"- Previous Law Firms: {bio['previous_firms']}\n"
-        if bio['education']:
+        if bio.get('education'):
             prompt += f"- Education: {bio['education']}\n"
-        if bio['awards']:
+        if bio.get('awards'):
             prompt += f"- Awards/Recognition: {bio['awards']}\n"
-        if bio['expert']:
+        if bio.get('expert'):
             prompt += f"- Areas of Expertise: {bio['expert']}\n"
-        if bio['notable_items']:
+        if bio.get('notable_items'):
             prompt += f"- Notable Experience: {bio['notable_items']}\n"
+            
+        # Add skills information SECOND as supporting evidence
+        prompt += "\nSUPPORTING SKILL EVIDENCE:\n"
+        if skills:
+            for skill in skills:
+                prompt += f"- {skill['skill']}: {skill['value']} points\n"
+        else:
+            prompt += "- No specific skills matched, but biographical information indicates expertise in this area.\n"
             
         prompt += "\n\n"
     
     prompt += """
-For each lawyer, provide a DETAILED explanation (at least 4-5 sentences) of why they would be an excellent match for this client need. Include specific aspects of their:
+For each lawyer, provide a DETAILED explanation (at least 4-5 sentences) of why they would be an excellent match for this client need, with PRIMARY EMPHASIS on their biographical information, practice areas, and experience. Include specific aspects of their:
 
-1. Skills relevance - How their specific skills directly relate to the client's needs
-2. Industry background - How their industry experience aligns with the client's requirements
-3. Prior experience - Highlight relevant previous work or clients that demonstrate fit
-4. Education or certifications that may be valuable for this matter
+1. Biographical details - How their specific practice areas, industry experience, and notable work directly relate to the client's needs
+2. Prior experience - Highlight relevant previous firms, in-house roles, or clients that demonstrate fit
+3. Education or certifications that may be valuable for this matter
+4. Skills assessment - How their self-reported skills (if matched) provide additional evidence of expertise
 5. Geographic or jurisdictional advantages if relevant
 
 Your analysis should be thorough and specific, referencing their unique qualifications rather than generic statements. Format your response as a detailed paragraph for each lawyer that explains exactly why they're well-positioned to address this specific client need.
@@ -607,8 +760,8 @@ def call_claude_api(prompt):
         # Return mock reasoning data for the lawyers
         try:
             return {
-                match['lawyer']['name']: f"This lawyer has strong expertise in {', '.join([s['skill'] for s in match['matched_skills'][:2]])}, making them highly qualified for this client matter. Their background in {match['lawyer']['bio'].get('practice_areas', 'relevant practice areas')} directly aligns with the client's requirements. With experience at {match['lawyer']['bio'].get('previous_in_house', 'relevant organizations')} and {match['lawyer']['bio'].get('previous_firms', 'law firms')}, they bring practical industry knowledge to the table. Their education from {match['lawyer']['bio'].get('education', 'respected institutions')} provides additional theoretical foundation for handling this matter effectively. They've dedicated significant points to these skills in their self-assessment, indicating deep confidence and capability in these areas."
-                for match in matches[:10]  # Updated to include up to 10 matches
+                match['lawyer']['name']: f"This lawyer's biographical information indicates they would be an excellent match for this client matter. Their practice areas in {match['lawyer']['bio'].get('practice_areas', 'relevant legal fields')} directly align with the client's requirements. With previous experience at {match['lawyer']['bio'].get('previous_in_house', 'relevant organizations')} and {match['lawyer']['bio'].get('previous_firms', 'law firms')}, they bring practical industry knowledge to handle this matter effectively. Their education from {match['lawyer']['bio'].get('education', 'respected institutions')} provides additional theoretical foundation for this type of work. Their self-reported skills in {', '.join([s['skill'] for s in match['matched_skills'][:2] if 'matched_skills' in match and len(match['matched_skills']) > 0]) or 'relevant areas'} further confirm their expertise in the relevant areas for this client need."
+                for match in matches[:10]  # Include up to 10 matches
             }
         except NameError:
             # Fallback if 'matches' is not defined in this scope
@@ -629,12 +782,12 @@ def call_claude_api(prompt):
             "content-type": "application/json"
         }
         
-        # Request payload
+        # Request payload - updated to use Claude 3.5 Sonnet
         payload = {
-            "model": "claude-3-opus-20240229",
+            "model": "claude-3-5-sonnet-20240620",
             "max_tokens": 1000,
             "temperature": 0.0,
-            "system": "You are a legal resource coordinator that analyzes lawyer expertise matches. You provide detailed, factual explanations about why specific lawyers match particular client legal needs based on their self-reported skills and biographical information. Be specific and thorough in your analysis, highlighting the exact qualifications that make each lawyer a good match.",
+            "system": "You are a legal resource coordinator that analyzes lawyer expertise matches. You provide detailed, factual explanations about why specific lawyers match particular client legal needs based on their biographical information and self-reported skills. Be specific and thorough in your analysis, highlighting the exact qualifications that make each lawyer a good match. Focus primarily on biographical data (practice areas, experience, education) and use self-reported skills as supporting evidence.",
             "messages": [
                 {"role": "user", "content": prompt}
             ]
@@ -669,11 +822,11 @@ def call_claude_api(prompt):
         # Return a fallback response
         return {"error": f"API error: {str(e)}"}
 
-# Real-time feedback function with Supabase integration
+# Enhanced feedback function with more detailed feedback options
 def add_realtime_feedback():
     st.markdown("---")
     st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
-    st.markdown('<div class="feedback-title">Provide Feedback</div>', unsafe_allow_html=True)
+    st.markdown('<div class="feedback-title">Provide Feedback on Search Results</div>', unsafe_allow_html=True)
     
     # Use a callback to update feedback in real-time
     def on_feedback_change():
@@ -685,8 +838,14 @@ def add_realtime_feedback():
                 "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "feedback": st.session_state.feedback_text,
                 "user_email": st.session_state.get('user_email', 'anonymous'),
-                "user_role": "partner",
-                "lawyer_results": json.dumps([m['lawyer']['name'] for m in matches]) if 'matches' in globals() else "[]"
+                "user_role": st.session_state.get('user_role', 'partner'),
+                "lawyer_results": json.dumps([m['lawyer']['name'] for m in matches]) if 'matches' in globals() else "[]",
+                # Add expected lawyers that should have appeared
+                "expected_lawyers": st.session_state.get('expected_lawyers', ''),
+                # Add rating of results
+                "rating": st.session_state.get('rating', ''),
+                # Add incorrect lawyers field
+                "incorrect_lawyers": st.session_state.get('incorrect_lawyers', '')
             }
             
             # Save to Supabase
@@ -700,6 +859,23 @@ def add_realtime_feedback():
                 st.session_state.feedback_saved = False
                 st.session_state.feedback_error = result.get('message')
     
+    # Add rating selector
+    st.markdown("<strong>How would you rate these search results?</strong>", unsafe_allow_html=True)
+    cols = st.columns(5)
+    rating_options = ["Poor", "Fair", "Good", "Very Good", "Excellent"]
+    
+    # Set up radio buttons for rating
+    rating = st.radio(
+        "Rating",
+        rating_options,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="rating_input"
+    )
+    
+    # Store rating in session state
+    st.session_state.rating = rating
+    
     # Optional email field for feedback attribution
     user_email = st.text_input(
         "Your email (optional):",
@@ -711,14 +887,47 @@ def add_realtime_feedback():
     # Store email in session state
     st.session_state.user_email = user_email
     
+    # User role selection
+    user_role = st.selectbox(
+        "Your role:",
+        ["Partner", "Associate", "Executive Assistant", "Legal Operations", "Other"],
+        index=0,
+        key="user_role_input"
+    )
+    
+    # Store user role in session state
+    st.session_state.user_role = user_role
+    
+    # Field to indicate expected lawyers that should have appeared
+    expected_lawyers = st.text_input(
+        "Lawyers you expected to see in results (comma-separated):",
+        value=st.session_state.get('expected_lawyers', ''),
+        key="expected_lawyers_input",
+        placeholder="Names of lawyers you expected to see in these search results"
+    )
+    
+    # Store expected lawyers in session state
+    st.session_state.expected_lawyers = expected_lawyers
+    
+    # Field to indicate incorrect lawyers that shouldn't have appeared
+    incorrect_lawyers = st.text_input(
+        "Lawyers that shouldn't have appeared in results (comma-separated):",
+        value=st.session_state.get('incorrect_lawyers', ''),
+        key="incorrect_lawyers_input",
+        placeholder="Names of lawyers you feel were incorrectly included in these results"
+    )
+    
+    # Store incorrect lawyers in session state
+    st.session_state.incorrect_lawyers = incorrect_lawyers
+    
     # Create a text area that calls the callback when changed
     feedback = st.text_area(
-        "Help us improve our lawyer matching system:",
+        "Additional feedback on search results:",
         value=st.session_state.feedback_text,
         key="feedback_input",
         on_change=on_feedback_change,
         height=100,
-        placeholder="Please share your thoughts on the search results or suggest improvements..."
+        placeholder="Please share your thoughts on why these results are helpful or what could be improved..."
     )
     
     # Update the feedback text in session state
@@ -729,7 +938,7 @@ def add_realtime_feedback():
         # If feedback saved successfully
         if st.session_state.get('feedback_saved', False):
             # Display a success message
-            st.success("✓ Feedback saved automatically")
+            st.success("✓ Feedback saved. Thank you for helping us improve the matching system!")
     
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -766,6 +975,39 @@ def show_admin_dashboard():
             file_name="feedback_data.csv",
             mime="text/csv"
         )
+        
+        # Analyze feedback to identify common patterns
+        st.markdown("### Feedback Analysis")
+        
+        # Most common expected lawyers
+        if 'expected_lawyers' in df.columns:
+            all_expected = []
+            for exp in df['expected_lawyers'].dropna():
+                names = [name.strip() for name in exp.split(',') if name.strip()]
+                all_expected.extend(names)
+            
+            if all_expected:
+                expected_counts = pd.Series(all_expected).value_counts().head(10)
+                st.markdown("#### Top Missing Lawyers")
+                st.bar_chart(expected_counts)
+        
+        # Most common incorrect lawyers
+        if 'incorrect_lawyers' in df.columns:
+            all_incorrect = []
+            for inc in df['incorrect_lawyers'].dropna():
+                names = [name.strip() for name in inc.split(',') if name.strip()]
+                all_incorrect.extend(names)
+            
+            if all_incorrect:
+                incorrect_counts = pd.Series(all_incorrect).value_counts().head(10)
+                st.markdown("#### Top Incorrectly Matched Lawyers")
+                st.bar_chart(incorrect_counts)
+        
+        # Rating distribution
+        if 'rating' in df.columns:
+            rating_counts = df['rating'].value_counts()
+            st.markdown("#### Rating Distribution")
+            st.bar_chart(rating_counts)
     else:
         st.warning("Feedback data format is not as expected.")
 
@@ -807,7 +1049,7 @@ else:
 
     # Updated preset queries - changed "M&A without tech companies" to just "M&A"
     preset_queries = [
-        "M&A",  # Updated from "M&A without tech companies"
+        "M&A",  # Simplified from "M&A not technology" to just "M&A"
         "Privacy compliance",
         "Startup law",
         "Employment issues",
@@ -816,7 +1058,7 @@ else:
         "Incorporation and corporate record keeping",
         "Healthcare compliance regulations",
         "Fintech regulatory compliance",
-        "Service agreements, including SaaS contracts"
+        "Commercial contracts & hospitality"  # Added this multi-criteria query based on feedback
     ]
 
     # Query input section
@@ -824,7 +1066,7 @@ else:
         "Describe client's legal needs in detail:", 
         value=st.session_state['query'],
         height=100,
-        placeholder="Example: Client needs a lawyer with blockchain governance experience for cross-border cryptocurrency transactions",
+        placeholder="Example: Client needs a lawyer with blockchain governance experience for cross-border cryptocurrency transactions or 'commercial contracts AND hospitality' for multiple criteria",
         key="query_input"
     )
 
@@ -869,10 +1111,9 @@ else:
                 for match in sorted_matches:
                     lawyer = match['lawyer']
                     matched_skills = match['matched_skills']
+                    matched_bio_reasons = match.get('matched_bio_reasons', [])
                     
                     with st.container():
-                        # Determine style classes
-                        
                         # Get bio data
                         bio = lawyer['bio'] if 'bio' in lawyer else {}
                         
@@ -916,7 +1157,15 @@ else:
                         # Add the bio section to the HTML output
                         html_output += bio_html
                         
-                        # Add the rest of the card
+                        # Add matched bio reasons section
+                        if matched_bio_reasons:
+                            html_output += '<div style="margin-top: 10px;"><strong>Matched Biographical Factors:</strong><br/>'
+                            for reason in matched_bio_reasons:
+                                field_name = reason['field'].replace('_', ' ').title()
+                                html_output += f'<span class="bio-match-tag">{field_name}</span> '
+                            html_output += '</div>'
+                        
+                        # Add skill tags
                         html_output += f"""
                             <div style="margin-top: 10px;">
                                 <strong>Relevant Expertise:</strong><br/>
@@ -971,14 +1220,6 @@ else:
             st.bar_chart(chart_data.set_index('Skill'))
             st.markdown('</div>', unsafe_allow_html=True)
             
-            # Quick stats
-            #st.markdown("### Firm Resource Overview")
-           # col1, col2 = st.columns(2)
-            #with col1:
-                #st.metric("Total Lawyers", len(data['lawyers']))
-            #with col2:
-                #st.metric("Expertise Areas", len(data['unique_skills']))
-            
             st.markdown("### Instructions for Matching")
             st.markdown("""
             Enter your client's specific legal needs above or select a common query to find matching legal experts. 
@@ -990,13 +1231,14 @@ else:
             - The nature of the legal matter
             - Timeframe and urgency
             
-            The system will match the query with lawyers who have self-reported expertise in those areas.
+            For multi-criteria searches, use "AND" or "&" between criteria (e.g., "commercial contracts AND hospitality").
+            The system will match the query with lawyers who have relevant biographical information and self-reported expertise in those areas.
             """)
 
     # Footer
     st.markdown("---")
     st.markdown(
-        "This internal tool uses self-reported expertise from 84 lawyers who distributed 120 points across 167 different legal skills. "
-        "Results are sorted alphabetically and matches are based on keyword relevance and self-reported skill points. "
-        "Last updated: April 12, 2025"
+        "This internal tool uses biographical information and self-reported expertise from 84 lawyers who distributed 120 points across 167 different legal skills. "
+        "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
+        "Last updated: April 18, 2025"
     )
