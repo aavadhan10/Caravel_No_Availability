@@ -279,6 +279,8 @@ if 'api_status' not in st.session_state:
     st.session_state.api_status = None
 if 'api_response_preview' not in st.session_state:
     st.session_state.api_response_preview = None
+if 'full_claude_response' not in st.session_state:
+    st.session_state.full_claude_response = None
 
 # Helper function to set the query and trigger search
 def set_query(text):
@@ -751,6 +753,56 @@ DO NOT include any additional text outside of this JSON structure.
 """
     return prompt
 
+# Add this function to generate a fallback explanation for a lawyer
+def generate_fallback_explanation(lawyer, bio, skills):
+    """Generate a detailed explanation for a lawyer when Claude API fails"""
+    # Extract key information
+    name = lawyer['name']
+    practice_areas = bio.get('practice_areas', 'relevant legal fields')
+    industry_exp = bio.get('industry_experience', 'relevant industries')
+    previous_exp = bio.get('previous_in_house', '')
+    previous_firms = bio.get('previous_firms', '')
+    education = bio.get('education', 'legal education')
+    expertise = bio.get('expert', '')
+    
+    # Create detailed explanation based on available information
+    explanation_parts = []
+    
+    # Add practice area match
+    explanation_parts.append(f"{name} specializes in {practice_areas}, which directly aligns with the client's requirements.")
+    
+    # Add industry experience if available
+    if industry_exp:
+        explanation_parts.append(f"Their industry experience in {industry_exp} provides valuable sector-specific knowledge for this matter.")
+    
+    # Add previous experience
+    if previous_exp or previous_firms:
+        exp_text = "Their professional background includes "
+        if previous_exp:
+            exp_text += f"in-house experience at {previous_exp}"
+            if previous_firms:
+                exp_text += f" and work at {previous_firms}"
+        else:
+            exp_text += f"work at {previous_firms}"
+        exp_text += ", giving them practical insights into similar legal challenges."
+        explanation_parts.append(exp_text)
+    
+    # Add education
+    if education:
+        explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this type of matter.")
+    
+    # Add skills as supporting evidence
+    if skills:
+        skill_names = ", ".join([s["skill"] for s in skills[:3]])
+        explanation_parts.append(f"Their self-reported expertise in {skill_names} further confirms their qualifications in the areas needed for this client.")
+    
+    # Add expertise if available
+    if expertise:
+        explanation_parts.append(f"Their specific expertise in {expertise} is directly relevant to addressing the client's needs effectively.")
+    
+    # Combine parts into a complete paragraph
+    return " ".join(explanation_parts)
+
 # Function to call Claude API using requests instead of anthropic client
 def call_claude_api(prompt):
     # Try to get API key from environment variables or secrets
@@ -772,60 +824,7 @@ def call_claude_api(prompt):
         st.warning("API key not found. Using mock reasoning data instead.")
         # Return detailed mock reasoning data for the lawyers
         try:
-            lawyer_explanations = {}
-            
-            for match in matches:
-                lawyer = match['lawyer']
-                bio = lawyer.get('bio', {})
-                skills = match.get('matched_skills', [])
-                
-                # Extract key information
-                practice_areas = bio.get('practice_areas', 'relevant legal fields')
-                industry_exp = bio.get('industry_experience', 'relevant industries')
-                previous_exp = bio.get('previous_in_house', '')
-                previous_firms = bio.get('previous_firms', '')
-                education = bio.get('education', 'legal education')
-                expertise = bio.get('expert', '')
-                
-                # Create detailed explanation based on available information
-                explanation_parts = []
-                
-                # Add practice area match
-                explanation_parts.append(f"{lawyer['name']} specializes in {practice_areas}, which directly aligns with the client's requirements.")
-                
-                # Add industry experience if available
-                if industry_exp:
-                    explanation_parts.append(f"Their industry experience in {industry_exp} provides valuable sector-specific knowledge for this matter.")
-                
-                # Add previous experience
-                if previous_exp or previous_firms:
-                    exp_text = "Their professional background includes "
-                    if previous_exp:
-                        exp_text += f"in-house experience at {previous_exp}"
-                        if previous_firms:
-                            exp_text += f" and work at {previous_firms}"
-                    else:
-                        exp_text += f"work at {previous_firms}"
-                    exp_text += ", giving them practical insights into similar legal challenges."
-                    explanation_parts.append(exp_text)
-                
-                # Add education
-                if education:
-                    explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this type of matter.")
-                
-                # Add skills as supporting evidence
-                if skills:
-                    skill_names = ", ".join([s["skill"] for s in skills[:3]])
-                    explanation_parts.append(f"Their self-reported expertise in {skill_names} further confirms their qualifications in the areas needed for this client.")
-                
-                # Add expertise if available
-                if expertise:
-                    explanation_parts.append(f"Their specific expertise in {expertise} is directly relevant to addressing the client's needs effectively.")
-                
-                # Combine parts into a complete paragraph
-                lawyer_explanations[lawyer['name']] = " ".join(explanation_parts)
-            
-            return lawyer_explanations
+            return call_claude_api_fallback(matches)
         except Exception as e:
             st.error(f"Error generating mock data: {str(e)}")
             return {"error": f"No API key provided and could not generate mock data: {str(e)}"}
@@ -868,16 +867,82 @@ def call_claude_api(prompt):
             response_json = response.json()
             response_text = response_json.get("content", [{}])[0].get("text", "")
             
-            # Find JSON part in the response
+            # Save the full response text for debugging
+            st.session_state['full_claude_response'] = response_text
+            
+            # Try several approaches to parse the JSON
+            # Approach 1: Find JSON within the response using regex
             import re
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            json_match = re.search(r'(\{[\s\S]*\})', response_text, re.DOTALL)
+            
             if json_match:
-                json_str = json_match.group(0)
-                return json.loads(json_str)
-            else:
-                st.warning("Could not extract JSON from Claude's response. Using formatted response text instead.")
-                # If JSON extraction fails, try to format the response text into a reasonable alternative
-                return {match['lawyer']['name']: response_text for match in matches[:10]}
+                try:
+                    # Clean up the JSON string
+                    json_str = json_match.group(0).strip()
+                    # Attempt to parse the JSON
+                    parsed_json = json.loads(json_str)
+                    return parsed_json
+                except json.JSONDecodeError as e:
+                    st.warning(f"JSON parsing error (Approach 1): {str(e)}")
+            
+            # Approach 2: Try to find JSON blocks using another pattern
+            json_match2 = re.search(r'({[\s\S]*})', response_text, re.DOTALL)
+            if json_match2:
+                try:
+                    json_str = json_match2.group(0).strip()
+                    # Try to fix common JSON issues (single quotes to double quotes)
+                    json_str = json_str.replace("'", '"')
+                    parsed_json = json.loads(json_str)
+                    return parsed_json
+                except json.JSONDecodeError as e:
+                    st.warning(f"JSON parsing error (Approach 2): {str(e)}")
+            
+            # Approach 3: Try to manually construct a JSON from the response
+            try:
+                lines = response_text.split('\n')
+                lawyer_explanations = {}
+                
+                current_lawyer = None
+                current_explanation = []
+                
+                for line in lines:
+                    # Look for patterns like "Lawyer Name": or "Lawyer Name":
+                    match = re.search(r'"([^"]+)"\s*:', line) or re.search(r'"([^"]+)":', line)
+                    if match and ':' in line:
+                        # If we already have a lawyer, save their explanation
+                        if current_lawyer and current_explanation:
+                            lawyer_explanations[current_lawyer] = ' '.join(current_explanation)
+                        
+                        # Start a new lawyer
+                        current_lawyer = match.group(1)
+                        
+                        # Extract the explanation part after the colon
+                        explanation_part = line.split(':', 1)[1].strip()
+                        if explanation_part.startswith('"') and explanation_part.endswith('"'):
+                            explanation_part = explanation_part[1:-1]  # Remove quotes
+                        
+                        current_explanation = [explanation_part] if explanation_part else []
+                    elif current_lawyer and line.strip():
+                        # Continue the current explanation
+                        line = line.strip()
+                        if line.startswith('"') and line.endswith('"'):
+                            line = line[1:-1]  # Remove quotes
+                        if line.endswith(','):
+                            line = line[:-1]  # Remove trailing comma
+                        current_explanation.append(line)
+                
+                # Don't forget to add the last lawyer
+                if current_lawyer and current_explanation:
+                    lawyer_explanations[current_lawyer] = ' '.join(current_explanation)
+                
+                if lawyer_explanations:
+                    return lawyer_explanations
+            except Exception as e:
+                st.warning(f"Manual JSON parsing error: {str(e)}")
+            
+            # If all parsing approaches fail, fall back to our manual generation
+            st.warning("Could not parse the JSON response from Claude. Using fallback explanations.")
+            return call_claude_api_fallback(matches)
         else:
             st.error(f"API call failed with status code {response.status_code}")
             st.code(response.text)  # Show the error response for debugging
@@ -905,51 +970,8 @@ def call_claude_api_fallback(matches):
             bio = lawyer.get('bio', {})
             skills = match.get('matched_skills', [])
             
-            # Extract key information
-            practice_areas = bio.get('practice_areas', 'relevant legal fields')
-            industry_exp = bio.get('industry_experience', 'relevant industries')
-            previous_exp = bio.get('previous_in_house', '')
-            previous_firms = bio.get('previous_firms', '')
-            education = bio.get('education', 'legal education')
-            expertise = bio.get('expert', '')
-            
-            # Create detailed explanation based on available information
-            explanation_parts = []
-            
-            # Add practice area match
-            explanation_parts.append(f"{lawyer['name']} specializes in {practice_areas}, which directly aligns with the client's requirements.")
-            
-            # Add industry experience if available
-            if industry_exp:
-                explanation_parts.append(f"Their industry experience in {industry_exp} provides valuable sector-specific knowledge for this matter.")
-            
-            # Add previous experience
-            if previous_exp or previous_firms:
-                exp_text = "Their professional background includes "
-                if previous_exp:
-                    exp_text += f"in-house experience at {previous_exp}"
-                    if previous_firms:
-                        exp_text += f" and work at {previous_firms}"
-                else:
-                    exp_text += f"work at {previous_firms}"
-                exp_text += ", giving them practical insights into similar legal challenges."
-                explanation_parts.append(exp_text)
-            
-            # Add education
-            if education:
-                explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this type of matter.")
-            
-            # Add skills as supporting evidence
-            if skills:
-                skill_names = ", ".join([s["skill"] for s in skills[:3]])
-                explanation_parts.append(f"Their self-reported expertise in {skill_names} further confirms their qualifications in the areas needed for this client.")
-            
-            # Add expertise if available
-            if expertise:
-                explanation_parts.append(f"Their specific expertise in {expertise} is directly relevant to addressing the client's needs effectively.")
-            
-            # Combine parts into a complete paragraph
-            lawyer_explanations[lawyer['name']] = " ".join(explanation_parts)
+            # Generate explanation using the helper function
+            lawyer_explanations[lawyer['name']] = generate_fallback_explanation(lawyer, bio, skills)
         
         return lawyer_explanations
     except Exception as e:
@@ -1244,7 +1266,11 @@ else:
                     if 'api_response_preview' in st.session_state:
                         st.write("API Response Preview:", st.session_state['api_response_preview'])
                     st.write("Reasoning Type:", type(reasoning))
-                    st.write("Reasoning Keys:", list(reasoning.keys()) if isinstance(reasoning, dict) else "Not a dictionary")
+                    if isinstance(reasoning, dict):
+                        st.write("Reasoning Keys:", list(reasoning.keys()))
+                    if 'full_claude_response' in st.session_state:
+                        st.write("Full Claude Response:")
+                        st.code(st.session_state['full_claude_response'])
                 
                 # Display results
                 st.markdown("## Matching Legal Experts")
@@ -1260,7 +1286,7 @@ else:
                     
                     with st.container():
                         # Get bio data
-                        bio = lawyer['bio'] if 'bio' in lawyer else {}
+                        bio = lawyer.get('bio', {})
                         
                         # Use raw HTML string concatenation to avoid Streamlit escaping issues
                         html_output = f"""
@@ -1318,15 +1344,32 @@ else:
                             </div>
                         """
                         
-                        # Add reasoning with proper error handling
-                        lawyer_reasoning = "No analysis available"
+                        # Get the specific explanation for this lawyer
+                        lawyer_reasoning = "No specific analysis available for this lawyer."
+                        
+                        # Try different variations of the lawyer name that might be in the reasoning dict
+                        lawyer_name_variants = [
+                            lawyer['name'],  # Original name
+                            lawyer['name'].strip(),  # Stripped of whitespace
+                            ' '.join(lawyer['name'].split()),  # Normalized spaces
+                            lawyer['name'].replace('  ', ' ')  # Replace double spaces
+                        ]
+                        
+                        # Try to find a match in the reasoning dictionary
                         if isinstance(reasoning, dict):
-                            if 'error' in reasoning:
-                                lawyer_reasoning = f"Error generating analysis: {reasoning['error']}"
-                            elif lawyer['name'] in reasoning:
-                                lawyer_reasoning = reasoning[lawyer['name']]
-                            else:
-                                lawyer_reasoning = "Detailed analysis not available for this lawyer"
+                            # Try different variants of the name
+                            for name_variant in lawyer_name_variants:
+                                if name_variant in reasoning:
+                                    lawyer_reasoning = reasoning[name_variant]
+                                    break
+                            
+                            # If still not found, use the fallback
+                            if lawyer_reasoning == "No specific analysis available for this lawyer.":
+                                # Generate a fallback explanation for this specific lawyer
+                                lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
+                        else:
+                            # If reasoning is not a dictionary, generate a fallback explanation
+                            lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
                         
                         html_output += f"""
                             <div class="reasoning-box">
@@ -1400,4 +1443,3 @@ else:
         "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
         "Last updated: April 18, 2025"
     )
-
