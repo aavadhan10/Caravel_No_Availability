@@ -781,60 +781,26 @@ def generate_fallback_explanation(lawyer, bio, skills):
         if level:
             experience_intro += f"is a {level} "
         if call:
-            years_exp = 2025 - int(call.split('(')[1].split(')')[0]) if '(' in call and ')' in call else None
-            if years_exp:
-                experience_intro += f"with {years_exp} years of legal experience "
+            # More robust parsing of years of experience
+            try:
+                # Try to extract a year from the call string
+                import re
+                year_match = re.search(r'\((\d{4})\)', call)
+                if year_match:
+                    years_exp = 2025 - int(year_match.group(1))
+                    if years_exp > 0:
+                        experience_intro += f"with {years_exp} years of legal experience "
+                else:
+                    # If no valid year found, just include the call information
+                    experience_intro += f"({call}) "
+            except (ValueError, IndexError):
+                # If any parsing error occurs, just use the call text directly
+                experience_intro += f"({call}) "
         
         if practice_areas:
             experience_intro += f"specializing in {practice_areas}"
         
         explanation_parts.append(experience_intro.strip() + ".")
-    
-    # Add information about their expertise areas as they relate to the search query
-    if practice_areas:
-        practice_areas_part = f"Their extensive experience in {practice_areas} "
-        if industry_exp:
-            practice_areas_part += f"with specific focus on the {industry_exp} sectors "
-        practice_areas_part += "provides the exact expertise needed for this client matter."
-        explanation_parts.append(practice_areas_part)
-    
-    # Add background information that shows breadth of experience
-    if previous_exp or previous_firms:
-        background_part = "Their background "
-        if previous_exp and previous_firms:
-            background_part += f"includes both in-house experience at {previous_exp} and professional work with {previous_firms}, "
-        elif previous_exp:
-            background_part += f"includes valuable in-house experience at {previous_exp}, "
-        elif previous_firms:
-            background_part += f"at {previous_firms} "
-        
-        background_part += "gives them practical insights into both the legal and business aspects of this matter."
-        explanation_parts.append(background_part)
-    
-    # Add education information
-    if education:
-        explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this client's needs.")
-    
-    # Add jurisdiction information if relevant
-    if jurisdiction:
-        explanation_parts.append(f"Their qualification to practice in {jurisdiction} is particularly valuable for this client matter.")
-    
-    # Connect biographical information with self-reported skills as confirmation
-    if skills:
-        skill_names = [f"{s['skill']} ({s['value']})" for s in skills[:3]]
-        skills_part = f"Their self-reported expertise ratings in {', '.join(skill_names)} confirms their confidence and capability in precisely the areas needed for this matter."
-        explanation_parts.append(skills_part)
-    
-    # Add expertise statement as a closing point if available
-    if expertise:
-        explanation_parts.append(f"Their recognized expertise in {expertise} makes them an outstanding choice for this client.")
-    
-    # Combine parts into a complete paragraph
-    # If we have too few parts, add a generic sentence
-    if len(explanation_parts) < 3:
-        explanation_parts.append(f"{name} has the perfect combination of experience, expertise, and qualifications to effectively address this client's specific legal needs.")
-    
-    return " ".join(explanation_parts)
 
 # Function to call Claude API using requests instead of anthropic client
 def call_claude_api(prompt):
