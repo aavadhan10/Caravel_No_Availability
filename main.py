@@ -5,6 +5,7 @@ import os
 import requests
 import json
 import re
+import html
 from functools import lru_cache
 from supabase import create_client, Client
 
@@ -753,54 +754,86 @@ DO NOT include any additional text outside of this JSON structure.
 """
     return prompt
 
-# Add this function to generate a fallback explanation for a lawyer
+# Improved function to generate more detailed, personalized fallback explanations
 def generate_fallback_explanation(lawyer, bio, skills):
-    """Generate a detailed explanation for a lawyer when Claude API fails"""
+    """
+    Generate a detailed, personalized explanation for why a lawyer matches the client's needs.
+    Focuses on their biographical information first, then corroborates with self-reported skills.
+    """
     # Extract key information
     name = lawyer['name']
-    practice_areas = bio.get('practice_areas', 'relevant legal fields')
-    industry_exp = bio.get('industry_experience', 'relevant industries')
+    practice_areas = bio.get('practice_areas', '')
+    industry_exp = bio.get('industry_experience', '')
     previous_exp = bio.get('previous_in_house', '')
     previous_firms = bio.get('previous_firms', '')
-    education = bio.get('education', 'legal education')
+    education = bio.get('education', '')
     expertise = bio.get('expert', '')
+    level = bio.get('level', '')
+    call = bio.get('call', '')
+    jurisdiction = bio.get('jurisdiction', '')
     
-    # Create detailed explanation based on available information
+    # Build a narrative explanation focused on biographical data first
     explanation_parts = []
     
-    # Add practice area match
-    explanation_parts.append(f"{name} specializes in {practice_areas}, which directly aligns with the client's requirements.")
+    # Start with their level and experience
+    if level or call:
+        experience_intro = f"{name} "
+        if level:
+            experience_intro += f"is a {level} "
+        if call:
+            years_exp = 2025 - int(call.split('(')[1].split(')')[0]) if '(' in call and ')' in call else None
+            if years_exp:
+                experience_intro += f"with {years_exp} years of legal experience "
+        
+        if practice_areas:
+            experience_intro += f"specializing in {practice_areas}"
+        
+        explanation_parts.append(experience_intro.strip() + ".")
     
-    # Add industry experience if available
-    if industry_exp:
-        explanation_parts.append(f"Their industry experience in {industry_exp} provides valuable sector-specific knowledge for this matter.")
+    # Add information about their expertise areas as they relate to the search query
+    if practice_areas:
+        practice_areas_part = f"Their extensive experience in {practice_areas} "
+        if industry_exp:
+            practice_areas_part += f"with specific focus on the {industry_exp} sectors "
+        practice_areas_part += "provides the exact expertise needed for this client matter."
+        explanation_parts.append(practice_areas_part)
     
-    # Add previous experience
+    # Add background information that shows breadth of experience
     if previous_exp or previous_firms:
-        exp_text = "Their professional background includes "
-        if previous_exp:
-            exp_text += f"in-house experience at {previous_exp}"
-            if previous_firms:
-                exp_text += f" and work at {previous_firms}"
-        else:
-            exp_text += f"work at {previous_firms}"
-        exp_text += ", giving them practical insights into similar legal challenges."
-        explanation_parts.append(exp_text)
+        background_part = "Their background "
+        if previous_exp and previous_firms:
+            background_part += f"includes both in-house experience at {previous_exp} and professional work with {previous_firms}, "
+        elif previous_exp:
+            background_part += f"includes valuable in-house experience at {previous_exp}, "
+        elif previous_firms:
+            background_part += f"at {previous_firms} "
+        
+        background_part += "gives them practical insights into both the legal and business aspects of this matter."
+        explanation_parts.append(background_part)
     
-    # Add education
+    # Add education information
     if education:
-        explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this type of matter.")
+        explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this client's needs.")
     
-    # Add skills as supporting evidence
+    # Add jurisdiction information if relevant
+    if jurisdiction:
+        explanation_parts.append(f"Their qualification to practice in {jurisdiction} is particularly valuable for this client matter.")
+    
+    # Connect biographical information with self-reported skills as confirmation
     if skills:
-        skill_names = ", ".join([s["skill"] for s in skills[:3]])
-        explanation_parts.append(f"Their self-reported expertise in {skill_names} further confirms their qualifications in the areas needed for this client.")
+        skill_names = [f"{s['skill']} ({s['value']})" for s in skills[:3]]
+        skills_part = f"Their self-reported expertise ratings in {', '.join(skill_names)} confirms their confidence and capability in precisely the areas needed for this matter."
+        explanation_parts.append(skills_part)
     
-    # Add expertise if available
+    # Add expertise statement as a closing point if available
     if expertise:
-        explanation_parts.append(f"Their specific expertise in {expertise} is directly relevant to addressing the client's needs effectively.")
+        explanation_parts.append(f"Their recognized expertise in {expertise} makes them an outstanding choice for this client.")
     
     # Combine parts into a complete paragraph
+    # If we have too few parts, add a generic sentence
+    if len(explanation_parts) < 3:
+        explanation_parts.append(f"{name} has the perfect combination of experience, expertise, and qualifications to effectively address this client's specific legal needs.")
+    
     return " ".join(explanation_parts)
 
 # Function to call Claude API using requests instead of anthropic client
@@ -977,42 +1010,11 @@ def call_claude_api_fallback(matches):
     except Exception as e:
         return {"error": f"Could not generate fallback explanations: {str(e)}"}
 
-# Enhanced feedback function with more detailed feedback options
+# Enhanced feedback function with submit button
 def add_realtime_feedback():
     st.markdown("---")
     st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
     st.markdown('<div class="feedback-title">Provide Feedback on Search Results</div>', unsafe_allow_html=True)
-    
-    # Use a callback to update feedback in real-time
-    def on_feedback_change():
-        # Only save to Supabase if feedback actually changed and is not empty
-        if st.session_state.feedback_text and st.session_state.feedback_text != st.session_state.last_saved_feedback:
-            # Create feedback data object
-            feedback_data = {
-                "query": st.session_state.get('query', ''),
-                "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "feedback": st.session_state.feedback_text,
-                "user_email": st.session_state.get('user_email', 'anonymous'),
-                "user_role": st.session_state.get('user_role', 'partner'),
-                "lawyer_results": json.dumps([m['lawyer']['name'] for m in matches]) if 'matches' in globals() else "[]",
-                # Add expected lawyers that should have appeared
-                "expected_lawyers": st.session_state.get('expected_lawyers', ''),
-                # Add rating of results
-                "rating": st.session_state.get('rating', ''),
-                # Add incorrect lawyers field
-                "incorrect_lawyers": st.session_state.get('incorrect_lawyers', '')
-            }
-            
-            # Save to Supabase
-            result = save_feedback_to_supabase(feedback_data)
-            
-            if result['success']:
-                st.session_state.feedback_saved = True
-                st.session_state.last_saved_feedback = st.session_state.feedback_text
-                st.session_state.last_feedback_id = result.get('id')
-            else:
-                st.session_state.feedback_saved = False
-                st.session_state.feedback_error = result.get('message')
     
     # Add rating selector
     st.markdown("<strong>How would you rate these search results?</strong>", unsafe_allow_html=True)
@@ -1075,12 +1077,11 @@ def add_realtime_feedback():
     # Store incorrect lawyers in session state
     st.session_state.incorrect_lawyers = incorrect_lawyers
     
-    # Create a text area that calls the callback when changed
+    # Create a text area for feedback
     feedback = st.text_area(
         "Additional feedback on search results:",
-        value=st.session_state.feedback_text,
+        value=st.session_state.get('feedback_text', ''),
         key="feedback_input",
-        on_change=on_feedback_change,
         height=100,
         placeholder="Please share your thoughts on why these results are helpful or what could be improved..."
     )
@@ -1088,12 +1089,45 @@ def add_realtime_feedback():
     # Update the feedback text in session state
     st.session_state.feedback_text = feedback
     
-    # If there's feedback, show it's being saved in real-time
-    if feedback:
-        # If feedback saved successfully
-        if st.session_state.get('feedback_saved', False):
-            # Display a success message
-            st.success("✓ Feedback saved. Thank you for helping us improve the matching system!")
+    # Create a submit button for feedback
+    submit_col1, submit_col2 = st.columns([3, 1])
+    with submit_col2:
+        submit_button = st.button("📝 Submit Feedback", key="submit_feedback", type="primary", use_container_width=True)
+    
+    # Handle submit button click
+    if submit_button:
+        if not feedback and not expected_lawyers and not incorrect_lawyers and rating == "":
+            st.warning("Please provide at least some feedback before submitting.")
+        else:
+            # Create feedback data object
+            feedback_data = {
+                "query": st.session_state.get('query', ''),
+                "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "feedback": feedback,
+                "user_email": user_email if user_email else 'anonymous',
+                "user_role": user_role,
+                "lawyer_results": json.dumps([m['lawyer']['name'] for m in matches]) if 'matches' in globals() else "[]",
+                "expected_lawyers": expected_lawyers,
+                "rating": rating,
+                "incorrect_lawyers": incorrect_lawyers
+            }
+            
+            # Save to Supabase
+            result = save_feedback_to_supabase(feedback_data)
+            
+            if result['success']:
+                st.session_state.feedback_saved = True
+                st.session_state.last_saved_feedback = feedback
+                st.session_state.last_feedback_id = result.get('id')
+                st.success("✓ Feedback submitted successfully! Thank you for helping us improve the matching system.")
+            else:
+                st.session_state.feedback_saved = False
+                st.session_state.feedback_error = result.get('message')
+                st.error(f"Error saving feedback: {result.get('message')}")
+    
+    # If feedback was already saved through other means
+    elif st.session_state.get('feedback_saved', False) and st.session_state.get('last_saved_feedback', '') == feedback:
+        st.success("✓ Feedback already saved. Thank you for your input!")
     
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -1371,10 +1405,15 @@ else:
                             # If reasoning is not a dictionary, generate a fallback explanation
                             lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
                         
+                        # Make sure the reasoning text is properly escaped and formatted
+                        # Escape any HTML tags that might be in the text
+                        lawyer_reasoning_escaped = html.escape(lawyer_reasoning)
+                        
+                        # Add the reasoning section to the HTML output with proper formatting
                         html_output += f"""
                             <div class="reasoning-box">
                                 <div class="match-rationale-title">WHY THIS LAWYER IS AN EXCELLENT MATCH:</div>
-                                {lawyer_reasoning}
+                                <p>{lawyer_reasoning_escaped}</p>
                             </div>
                         </div>
                         """
@@ -1395,51 +1434,51 @@ else:
                 add_realtime_feedback()
 
     # Show exploration section when no search is active
-    if not st.session_state['search_pressed'] or not st.session_state['query']:
-        st.markdown("## Explore Available Legal Expertise")
+if not st.session_state['search_pressed'] or not st.session_state['query']:
+    st.markdown("## Explore Available Legal Expertise")
+    
+    if data:
+        # Create a visual breakdown of legal expertise
+        all_skills = {}
+        for lawyer in data['lawyers']:
+            for skill, value in lawyer['skills'].items():
+                if skill in all_skills:
+                    all_skills[skill] += value
+                else:
+                    all_skills[skill] = value
         
-        if data:
-            # Create a visual breakdown of legal expertise
-            all_skills = {}
-            for lawyer in data['lawyers']:
-                for skill, value in lawyer['skills'].items():
-                    if skill in all_skills:
-                        all_skills[skill] += value
-                    else:
-                        all_skills[skill] = value
-            
-            # Get top 20 skills by total points
-            top_skills = sorted(all_skills.items(), key=lambda x: x[1], reverse=True)[:20]
-            
-            # Show bar chart of top skills in scrollable container
-            st.markdown("### Most Common Legal Expertise Areas")
-            st.markdown('<div class="scroll-container">', unsafe_allow_html=True)
-            chart_data = pd.DataFrame({
-                'Skill': [s[0] for s in top_skills],
-                'Total Points': [s[1] for s in top_skills]
-            })
-            st.bar_chart(chart_data.set_index('Skill'))
-            st.markdown('</div>', unsafe_allow_html=True)
-            
-            st.markdown("### Instructions for Matching")
-            st.markdown("""
-            Enter your client's specific legal needs above or select a common query to find matching legal experts. 
-            Be as specific as possible about their requirements, including:
-            
-            - The type of legal expertise needed
-            - Any industry-specific requirements
-            - Geographic considerations (e.g., province-specific needs)
-            - The nature of the legal matter
-            - Timeframe and urgency
-            
-            For multi-criteria searches, use "AND" or "&" between criteria (e.g., "commercial contracts AND hospitality").
-            The system will match the query with lawyers who have relevant biographical information and self-reported expertise in those areas.
-            """)
+        # Get top 20 skills by total points
+        top_skills = sorted(all_skills.items(), key=lambda x: x[1], reverse=True)[:20]
+        
+        # Show bar chart of top skills in scrollable container
+        st.markdown("### Most Common Legal Expertise Areas")
+        st.markdown('<div class="scroll-container">', unsafe_allow_html=True)
+        chart_data = pd.DataFrame({
+            'Skill': [s[0] for s in top_skills],
+            'Total Points': [s[1] for s in top_skills]
+        })
+        st.bar_chart(chart_data.set_index('Skill'))
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        st.markdown("### Instructions for Matching")
+        st.markdown("""
+        Enter your client's specific legal needs above or select a common query to find matching legal experts. 
+        Be as specific as possible about their requirements, including:
+        
+        - The type of legal expertise needed
+        - Any industry-specific requirements
+        - Geographic considerations (e.g., province-specific needs)
+        - The nature of the legal matter
+        - Timeframe and urgency
+        
+        For multi-criteria searches, use "AND" or "&" between criteria (e.g., "commercial contracts AND hospitality").
+        The system will match the query with lawyers who have relevant biographical information and self-reported expertise in those areas.
+        """)
 
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "This internal tool uses biographical information and self-reported expertise from 84 lawyers who distributed 120 points across 167 different legal skills. "
-        "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
-        "Last updated: April 18, 2025"
-    )
+# Footer
+st.markdown("---")
+st.markdown(
+    "This internal tool uses biographical information and self-reported expertise from 84 lawyers who distributed 120 points across 167 different legal skills. "
+    "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
+    "Last updated: April 18, 2025"
+)
