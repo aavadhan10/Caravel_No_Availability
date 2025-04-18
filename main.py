@@ -273,6 +273,12 @@ if 'show_admin_dashboard' not in st.session_state:
     st.session_state.show_admin_dashboard = False
 if 'admin_mode' not in st.session_state:
     st.session_state.admin_mode = False
+if 'api_key_found' not in st.session_state:
+    st.session_state.api_key_found = False
+if 'api_status' not in st.session_state:
+    st.session_state.api_status = None
+if 'api_response_preview' not in st.session_state:
+    st.session_state.api_response_preview = None
 
 # Helper function to set the query and trigger search
 def set_query(text):
@@ -659,14 +665,14 @@ def match_lawyers(data, query, top_n=10):  # Changed from 5 to 10
     # Sort by final score and take top N
     return sorted(matches, key=lambda x: x['score'], reverse=True)[:top_n]
 
-# Updated function to format Claude's analysis prompt with bio prioritization
+# Updated function to format Claude's analysis prompt with clearer structure
 def format_claude_prompt(query, matches):
     prompt = f"""
 I need to analyze and provide detailed reasoning for why specific lawyers match a client's legal needs based on their expertise, skills, and background.
 
 Client's Legal Need: "{query}"
 
-Here are the matching lawyers with their biographical information and skills:
+I'll provide you with information about each matching lawyer. For each lawyer, please provide a detailed, specific explanation of why they would be an excellent match for this client need. Focus on their biographical information, expertise, and experience.
 
 """
     
@@ -679,15 +685,16 @@ Here are the matching lawyers with their biographical information and skills:
         prompt += f"LAWYER {i}: {lawyer['name']}\n"
         prompt += "---------------------------------------------\n"
         
-        # Add matched biographical information FIRST
-        prompt += "PRIMARY MATCHING FACTORS (BIOGRAPHICAL INFORMATION):\n"
+        # Add matched biographical information FIRST - this is what matched in the search
         if bio_reasons:
+            prompt += "MATCHING BIOGRAPHICAL FACTORS:\n"
             for reason in bio_reasons:
                 field_name = reason['field'].replace('_', ' ').title()
                 prompt += f"- {field_name}: {reason['value']}\n"
+            prompt += "\n"
         
         # Add full biographical information
-        prompt += "\nCOMPLETE BIOGRAPHICAL INFORMATION:\n"
+        prompt += "BIOGRAPHICAL INFORMATION:\n"
         if bio.get('level'):
             prompt += f"- Level/Title: {bio['level']}\n"
         if bio.get('call'):
@@ -712,60 +719,116 @@ Here are the matching lawyers with their biographical information and skills:
             prompt += f"- Areas of Expertise: {bio['expert']}\n"
         if bio.get('notable_items'):
             prompt += f"- Notable Experience: {bio['notable_items']}\n"
+        prompt += "\n"
             
-        # Add skills information SECOND as supporting evidence
-        prompt += "\nSUPPORTING SKILL EVIDENCE:\n"
+        # Add skills information as supporting evidence
         if skills:
+            prompt += "SELF-REPORTED SKILLS:\n"
             for skill in skills:
                 prompt += f"- {skill['skill']}: {skill['value']} points\n"
-        else:
-            prompt += "- No specific skills matched, but biographical information indicates expertise in this area.\n"
-            
+        
         prompt += "\n\n"
     
     prompt += """
-For each lawyer, provide a DETAILED explanation (at least 4-5 sentences) of why they would be an excellent match for this client need, with PRIMARY EMPHASIS on their biographical information, practice areas, and experience. Include specific aspects of their:
+For each lawyer, write ONE detailed paragraph (5-7 sentences) explaining why they are an excellent match for this client's needs.
 
-1. Biographical details - How their specific practice areas, industry experience, and notable work directly relate to the client's needs
-2. Prior experience - Highlight relevant previous firms, in-house roles, or clients that demonstrate fit
-3. Education or certifications that may be valuable for this matter
-4. Skills assessment - How their self-reported skills (if matched) provide additional evidence of expertise
-5. Geographic or jurisdictional advantages if relevant
+Your explanation should:
+1. Highlight relevant biographical details that match the client's needs
+2. Mention specific practice areas, industry experience, or previous roles that are relevant
+3. Include educational background if relevant
+4. Reference their self-reported skills that support their expertise
+5. Be specific and substantive - avoid generic language
 
-Your analysis should be thorough and specific, referencing their unique qualifications rather than generic statements. Format your response as a detailed paragraph for each lawyer that explains exactly why they're well-positioned to address this specific client need.
+Format your response as a JSON object where each key is the lawyer's name and each value is your explanation paragraph:
 
-Format your response in JSON like this:
 {
-    "lawyer1_name": "Detailed explanation of why lawyer 1 is an excellent match...",
-    "lawyer2_name": "Detailed explanation of why lawyer 2 is an excellent match...",
-    "lawyer3_name": "Detailed explanation of why lawyer 3 is an excellent match..."
+    "Lawyer Name 1": "Detailed explanation paragraph for this lawyer...",
+    "Lawyer Name 2": "Detailed explanation paragraph for this lawyer...",
+    "Lawyer Name 3": "Detailed explanation paragraph for this lawyer..."
 }
+
+DO NOT include any additional text outside of this JSON structure.
 """
     return prompt
 
 # Function to call Claude API using requests instead of anthropic client
 def call_claude_api(prompt):
     # Try to get API key from environment variables or secrets
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "YOUR_API_KEY_HERE")
+    api_key = os.environ.get("ANTHROPIC_API_KEY", None)
     
-    # Try secrets if available
+    # Try secrets if available (this should work with your secrets.toml configuration)
     try:
         if 'anthropic' in st.secrets and 'api_key' in st.secrets["anthropic"]:
             api_key = st.secrets["anthropic"]["api_key"]
-    except:
-        pass
+            st.session_state['api_key_found'] = True
+        else:
+            st.session_state['api_key_found'] = False
+    except Exception as e:
+        st.session_state['api_key_found'] = False
+        st.session_state['api_key_error'] = str(e)
     
     # Handle the case where no API key is provided
-    if api_key == "YOUR_API_KEY_HERE":
-        # Return mock reasoning data for the lawyers
+    if not api_key:
+        st.warning("API key not found. Using mock reasoning data instead.")
+        # Return detailed mock reasoning data for the lawyers
         try:
-            return {
-                match['lawyer']['name']: f"This lawyer's biographical information indicates they would be an excellent match for this client matter. Their practice areas in {match['lawyer']['bio'].get('practice_areas', 'relevant legal fields')} directly align with the client's requirements. With previous experience at {match['lawyer']['bio'].get('previous_in_house', 'relevant organizations')} and {match['lawyer']['bio'].get('previous_firms', 'law firms')}, they bring practical industry knowledge to handle this matter effectively. Their education from {match['lawyer']['bio'].get('education', 'respected institutions')} provides additional theoretical foundation for this type of work. Their self-reported skills in {', '.join([s['skill'] for s in match['matched_skills'][:2] if 'matched_skills' in match and len(match['matched_skills']) > 0]) or 'relevant areas'} further confirm their expertise in the relevant areas for this client need."
-                for match in matches[:10]  # Include up to 10 matches
-            }
-        except NameError:
-            # Fallback if 'matches' is not defined in this scope
-            return {"Error": "No API key provided and could not generate mock data"}
+            lawyer_explanations = {}
+            
+            for match in matches:
+                lawyer = match['lawyer']
+                bio = lawyer.get('bio', {})
+                skills = match.get('matched_skills', [])
+                
+                # Extract key information
+                practice_areas = bio.get('practice_areas', 'relevant legal fields')
+                industry_exp = bio.get('industry_experience', 'relevant industries')
+                previous_exp = bio.get('previous_in_house', '')
+                previous_firms = bio.get('previous_firms', '')
+                education = bio.get('education', 'legal education')
+                expertise = bio.get('expert', '')
+                
+                # Create detailed explanation based on available information
+                explanation_parts = []
+                
+                # Add practice area match
+                explanation_parts.append(f"{lawyer['name']} specializes in {practice_areas}, which directly aligns with the client's requirements.")
+                
+                # Add industry experience if available
+                if industry_exp:
+                    explanation_parts.append(f"Their industry experience in {industry_exp} provides valuable sector-specific knowledge for this matter.")
+                
+                # Add previous experience
+                if previous_exp or previous_firms:
+                    exp_text = "Their professional background includes "
+                    if previous_exp:
+                        exp_text += f"in-house experience at {previous_exp}"
+                        if previous_firms:
+                            exp_text += f" and work at {previous_firms}"
+                    else:
+                        exp_text += f"work at {previous_firms}"
+                    exp_text += ", giving them practical insights into similar legal challenges."
+                    explanation_parts.append(exp_text)
+                
+                # Add education
+                if education:
+                    explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this type of matter.")
+                
+                # Add skills as supporting evidence
+                if skills:
+                    skill_names = ", ".join([s["skill"] for s in skills[:3]])
+                    explanation_parts.append(f"Their self-reported expertise in {skill_names} further confirms their qualifications in the areas needed for this client.")
+                
+                # Add expertise if available
+                if expertise:
+                    explanation_parts.append(f"Their specific expertise in {expertise} is directly relevant to addressing the client's needs effectively.")
+                
+                # Combine parts into a complete paragraph
+                lawyer_explanations[lawyer['name']] = " ".join(explanation_parts)
+            
+            return lawyer_explanations
+        except Exception as e:
+            st.error(f"Error generating mock data: {str(e)}")
+            return {"error": f"No API key provided and could not generate mock data: {str(e)}"}
     
     try:
         # Import just what we need to make an HTTP request
@@ -782,11 +845,11 @@ def call_claude_api(prompt):
             "content-type": "application/json"
         }
         
-        # Request payload - updated to use Claude 3.5 Sonnet
+        # Request payload - using Claude 3.5 Sonnet
         payload = {
             "model": "claude-3-5-sonnet-20240620",
             "max_tokens": 1000,
-            "temperature": 0.0,
+            "temperature": 0.2,
             "system": "You are a legal resource coordinator that analyzes lawyer expertise matches. You provide detailed, factual explanations about why specific lawyers match particular client legal needs based on their biographical information and self-reported skills. Be specific and thorough in your analysis, highlighting the exact qualifications that make each lawyer a good match. Focus primarily on biographical data (practice areas, experience, education) and use self-reported skills as supporting evidence.",
             "messages": [
                 {"role": "user", "content": prompt}
@@ -795,6 +858,10 @@ def call_claude_api(prompt):
         
         # Make the request
         response = requests.post(url, headers=headers, json=payload)
+        
+        # Log API response status and truncated content for debugging
+        st.session_state['api_status'] = response.status_code
+        st.session_state['api_response_preview'] = response.text[:100] + "..." if len(response.text) > 100 else response.text
         
         # Check for successful response
         if response.status_code == 200:
@@ -808,9 +875,15 @@ def call_claude_api(prompt):
                 json_str = json_match.group(0)
                 return json.loads(json_str)
             else:
-                return {"error": "Could not extract JSON from Claude's response"}
+                st.warning("Could not extract JSON from Claude's response. Using formatted response text instead.")
+                # If JSON extraction fails, try to format the response text into a reasonable alternative
+                return {match['lawyer']['name']: response_text for match in matches[:10]}
         else:
-            return {"error": f"API call failed with status code {response.status_code}: {response.text}"}
+            st.error(f"API call failed with status code {response.status_code}")
+            st.code(response.text)  # Show the error response for debugging
+            
+            # Fall back to the mock data
+            return call_claude_api_fallback(matches)
             
     except Exception as e:
         st.error(f"Error calling Claude API: {str(e)}")
@@ -819,8 +892,68 @@ def call_claude_api(prompt):
         import traceback
         st.error(f"Error details: {traceback.format_exc()}")
         
-        # Return a fallback response
-        return {"error": f"API error: {str(e)}"}
+        # Return using the fallback function
+        return call_claude_api_fallback(matches)
+
+# Fallback function for generating mock lawyer reasoning
+def call_claude_api_fallback(matches):
+    try:
+        lawyer_explanations = {}
+        
+        for match in matches:
+            lawyer = match['lawyer']
+            bio = lawyer.get('bio', {})
+            skills = match.get('matched_skills', [])
+            
+            # Extract key information
+            practice_areas = bio.get('practice_areas', 'relevant legal fields')
+            industry_exp = bio.get('industry_experience', 'relevant industries')
+            previous_exp = bio.get('previous_in_house', '')
+            previous_firms = bio.get('previous_firms', '')
+            education = bio.get('education', 'legal education')
+            expertise = bio.get('expert', '')
+            
+            # Create detailed explanation based on available information
+            explanation_parts = []
+            
+            # Add practice area match
+            explanation_parts.append(f"{lawyer['name']} specializes in {practice_areas}, which directly aligns with the client's requirements.")
+            
+            # Add industry experience if available
+            if industry_exp:
+                explanation_parts.append(f"Their industry experience in {industry_exp} provides valuable sector-specific knowledge for this matter.")
+            
+            # Add previous experience
+            if previous_exp or previous_firms:
+                exp_text = "Their professional background includes "
+                if previous_exp:
+                    exp_text += f"in-house experience at {previous_exp}"
+                    if previous_firms:
+                        exp_text += f" and work at {previous_firms}"
+                else:
+                    exp_text += f"work at {previous_firms}"
+                exp_text += ", giving them practical insights into similar legal challenges."
+                explanation_parts.append(exp_text)
+            
+            # Add education
+            if education:
+                explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this type of matter.")
+            
+            # Add skills as supporting evidence
+            if skills:
+                skill_names = ", ".join([s["skill"] for s in skills[:3]])
+                explanation_parts.append(f"Their self-reported expertise in {skill_names} further confirms their qualifications in the areas needed for this client.")
+            
+            # Add expertise if available
+            if expertise:
+                explanation_parts.append(f"Their specific expertise in {expertise} is directly relevant to addressing the client's needs effectively.")
+            
+            # Combine parts into a complete paragraph
+            lawyer_explanations[lawyer['name']] = " ".join(explanation_parts)
+        
+        return lawyer_explanations
+    except Exception as e:
+        return {"error": f"Could not generate fallback explanations: {str(e)}"}
 
 # Enhanced feedback function with more detailed feedback options
 def add_realtime_feedback():
@@ -1101,6 +1234,18 @@ else:
                 claude_prompt = format_claude_prompt(st.session_state['query'], matches)
                 reasoning = call_claude_api(claude_prompt)
                 
+                # Add debugging information in expandable section
+                with st.expander("Debug Information", expanded=False):
+                    st.write("API Key Found:", st.session_state.get('api_key_found', 'Not checked'))
+                    if 'api_key_error' in st.session_state:
+                        st.write("API Key Error:", st.session_state['api_key_error'])
+                    if 'api_status' in st.session_state:
+                        st.write("API Status Code:", st.session_state['api_status'])
+                    if 'api_response_preview' in st.session_state:
+                        st.write("API Response Preview:", st.session_state['api_response_preview'])
+                    st.write("Reasoning Type:", type(reasoning))
+                    st.write("Reasoning Keys:", list(reasoning.keys()) if isinstance(reasoning, dict) else "Not a dictionary")
+                
                 # Display results
                 st.markdown("## Matching Legal Experts")
                 st.markdown(f"Found {len(matches)} lawyers matching client needs:")
@@ -1171,9 +1316,22 @@ else:
                                 <strong>Relevant Expertise:</strong><br/>
                                 {"".join([f'<span class="skill-tag">{skill["skill"]}: {skill["value"]}</span>' for skill in matched_skills])}
                             </div>
+                        """
+                        
+                        # Add reasoning with proper error handling
+                        lawyer_reasoning = "No analysis available"
+                        if isinstance(reasoning, dict):
+                            if 'error' in reasoning:
+                                lawyer_reasoning = f"Error generating analysis: {reasoning['error']}"
+                            elif lawyer['name'] in reasoning:
+                                lawyer_reasoning = reasoning[lawyer['name']]
+                            else:
+                                lawyer_reasoning = "Detailed analysis not available for this lawyer"
+                        
+                        html_output += f"""
                             <div class="reasoning-box">
                                 <div class="match-rationale-title">WHY THIS LAWYER IS AN EXCELLENT MATCH:</div>
-                                {reasoning.get(lawyer['name'], 'This lawyer has relevant expertise in the areas described in the client query.')}
+                                {lawyer_reasoning}
                             </div>
                         </div>
                         """
@@ -1242,3 +1400,4 @@ else:
         "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
         "Last updated: April 18, 2025"
     )
+
