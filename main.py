@@ -1376,13 +1376,6 @@ else:
                         st.markdown("### WHY THIS LAWYER IS AN EXCELLENT MATCH:")
                         st.markdown(f"_{lawyer_reasoning}_", unsafe_allow_html=False)
                         
-                        lawyer_reasoning_clean = lawyer_reasoning.replace('<', '&lt;').replace('>', '&gt;') 
-                        html_output += f"""
-                            <div class="reasoning-box">
-                                <div class="match-rationale-title">WHY THIS LAWYER IS AN EXCELLENT MATCH:</div>
-                                {lawyer_reasoning_clean}
-                            </div>
-                        </div>
                         """
                         
                         # Render the HTML
