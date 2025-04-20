@@ -1371,6 +1371,11 @@ else:
                             # If reasoning is not a dictionary, generate a fallback explanation
                             lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
                         
+                        html_output += "</div>"
+                        st.markdown(html_output, unsafe_allow_html=True)
+                        st.markdown("### WHY THIS LAWYER IS AN EXCELLENT MATCH:")
+                        st.markdown(f"_{lawyer_reasoning}_", unsafe_allow_html=False)
+                        
                         lawyer_reasoning_clean = lawyer_reasoning.replace('<', '&lt;').replace('>', '&gt;') 
                         html_output += f"""
                             <div class="reasoning-box">
