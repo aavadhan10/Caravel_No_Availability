@@ -294,7 +294,7 @@ for query in recent_queries:
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Need Help?")
 st.sidebar.info(
-    "For assistance with the matching tool or to add a lawyer to the database, contact the Legal Operations team at legalops@example.com"
+    "For assistance with the matching tool or to add a lawyer to the database, contact the AI team at officeofinnovation@brieflylegal.com"
 )
 
 # Function to load and process the CSV data
