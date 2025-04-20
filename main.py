@@ -1371,10 +1371,11 @@ else:
                             # If reasoning is not a dictionary, generate a fallback explanation
                             lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
                         
+                        lawyer_reasoning_clean = lawyer_reasoning.replace('<', '&lt;').replace('>', '&gt;') 
                         html_output += f"""
                             <div class="reasoning-box">
                                 <div class="match-rationale-title">WHY THIS LAWYER IS AN EXCELLENT MATCH:</div>
-                                {lawyer_reasoning}
+                                {lawyer_reasoning_clean}
                             </div>
                         </div>
                         """
