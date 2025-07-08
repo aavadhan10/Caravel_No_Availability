@@ -760,6 +760,7 @@ For each lawyer, write ONE detailed paragraph (5-7 sentences) explaining why the
 
 Your explanation should:
 1. Highlight relevant biographical details that match the client's needs
+2. PLACE BIO importance over SKILLSETS. PLEASE USE THE CARAVEL_NEW.CSV TO showcase their whole bio AND BLURB. ALL THAT INFORMATION IS THERE ALL OF IT IS THERE. 
 2. Mention specific practice areas, industry experience, or previous roles that are relevant
 3. Include educational background if relevant
 4. Reference their self-reported skills that support their expertise
