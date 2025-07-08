@@ -2560,5 +2560,5 @@ else:
         "This internal tool uses biographical information and self-reported expertise from lawyers in the database. "
         "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
         f"Currently loaded: {len(data['lawyers']) if data else 0} lawyers with {len(data['unique_skills']) if data else 0} unique skills. "
-        "Last updated: July 8, 2025"
+        "Last updated: April 18, 2025"
     )
