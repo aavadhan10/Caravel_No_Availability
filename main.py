@@ -306,7 +306,7 @@ def load_lawyer_data():
         skills_data = process_lawyer_data(skills_df)
         
         # Load the biographical data
-        bio_df = pd.read_csv('BD_Caravel.csv')
+        bio_df = pd.read_csv('Caravel_New.csv')
         bio_data = process_bio_data(bio_df)
         
         # Combine the data
