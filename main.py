@@ -595,7 +595,7 @@ def load_lawyer_data():
         st.error(f"Error loading data: {e}")
         return None
 
-# MODIFIED: Enhanced matching function that prioritizes bio/blurb over skills
+# MODIFIED: Enhanced matching function that prioritizes bio/blurb over skills but ALWAYS returns 10 lawyers
 def match_lawyers(data, query, top_n=10):
     if not data:
         return []
@@ -606,9 +606,14 @@ def match_lawyers(data, query, top_n=10):
     # Test users to exclude - preventing test accounts from appearing in results
     excluded_users = ["Ankita", "Test", "Tania", "Antoine Malek", "Connie Chan", "Michelle Koyle", "Sue Gaudi", "Rose Os"]
     
+    # For IP queries, expand the search terms
+    if "ip" in lower_query or "intellectual property" in lower_query:
+        expanded_query = lower_query + " intellectual property ip patent trademark copyright licensing technology"
+        lower_query = expanded_query
+    
     # For M&A queries, expand the search terms
     if "m&a" in lower_query or "merger" in lower_query or "acquisition" in lower_query:
-        expanded_query = lower_query + " acquisitions mergers purchase sale of business"
+        expanded_query = lower_query + " acquisitions mergers purchase sale of business corporate transactions"
         lower_query = expanded_query
     
     # Check for multi-criteria queries (like "commercial contracts AND hospitality")
@@ -620,53 +625,48 @@ def match_lawyers(data, query, top_n=10):
         query_parts = [lower_query]
     
     # Calculate match scores for each lawyer
-    matches = []
+    all_lawyers = []
     for lawyer in data['lawyers']:
         # Skip excluded users
         if any(excluded_name in lawyer['name'] for excluded_name in excluded_users):
             continue
             
         bio_score = 0
-        blurb_score = 0  # NEW: separate score for bio.blurb
+        blurb_score = 0
         skill_score = 0
         matched_bio_reasons = []
-        matched_blurb_reasons = []  # NEW
+        matched_blurb_reasons = []
         matched_skills = []
-        all_criteria_matched = True if len(query_parts) > 1 else False
+        
+        # Get bio data
+        bio = lawyer.get('bio', {})
         
         # FIRST: Check bio.blurb for matches (HIGHEST PRIORITY)
-        bio = lawyer.get('bio', {})
         blurb_text = bio.get('blurb', '').lower()
         
         if blurb_text:
             for query_part in query_parts:
-                part_matched_in_blurb = False
-                
                 # Check for exact or partial matches in blurb
                 if query_part.strip() in blurb_text:
-                    blurb_score += 10  # HIGHEST score for blurb matches
+                    blurb_score += 10
                     matched_blurb_reasons.append({
                         'field': 'bio.blurb',
                         'value': bio.get('blurb', ''),
                         'match_type': 'exact_phrase'
                     })
-                    part_matched_in_blurb = True
-                
-                # For multi-criteria queries, track if each part matched in blurb
-                if not part_matched_in_blurb:
+                else:
+                    # Check word matches
                     for word in query_part.split():
-                        if word in blurb_text and len(word) > 3:  # Avoid matching small words
-                            blurb_score += 6  # High score for word matches in blurb
+                        if word in blurb_text and len(word) > 2:  # Lowered from 3 to 2
+                            blurb_score += 6
                             matched_blurb_reasons.append({
                                 'field': 'bio.blurb',
                                 'value': bio.get('blurb', ''),
                                 'match_type': 'word_match'
                             })
-                            part_matched_in_blurb = True
                             break
         
         # SECOND: Check other biographical data for matches
-        # Create a single text string from all biographical data to search (excluding blurb)
         bio_text = " ".join([
             bio.get('practice_areas', ''),
             bio.get('expert', ''),
@@ -675,18 +675,16 @@ def match_lawyers(data, query, top_n=10):
             bio.get('previous_in_house', ''),
             bio.get('previous_firms', ''),
             bio.get('education', ''),
-            bio.get('awards', '')
+            bio.get('awards', ''),
+            lawyer.get('practice_area', '')  # Include the assigned practice area
         ]).lower()
         
         # Check each query part against biographical data
         for query_part in query_parts:
-            part_matched_in_bio = False
-            
             # Check for exact or partial matches in biographical data
             if query_part.strip() in bio_text:
-                bio_score += 7  # High score for bio matches (but lower than blurb)
-                
-                # Determine which bio field matched
+                bio_score += 7
+                # Find which field matched
                 for field, value in bio.items():
                     if field != 'blurb' and value and query_part.strip() in value.lower():
                         matched_bio_reasons.append({
@@ -694,15 +692,13 @@ def match_lawyers(data, query, top_n=10):
                             'value': value,
                             'match_type': 'exact_phrase'
                         })
-                        part_matched_in_bio = True
-            
-            # For multi-criteria queries, track if each part matched in bio
-            if not part_matched_in_bio:
+                        break
+            else:
+                # Check word matches
                 for word in query_part.split():
-                    if word in bio_text and len(word) > 3:  # Avoid matching small words
+                    if word in bio_text and len(word) > 2:  # Lowered from 3 to 2
                         bio_score += 4
-                        
-                        # Determine which bio field matched
+                        # Find which field matched
                         for field, value in bio.items():
                             if field != 'blurb' and value and word in value.lower():
                                 matched_bio_reasons.append({
@@ -710,83 +706,66 @@ def match_lawyers(data, query, top_n=10):
                                     'value': value,
                                     'match_type': 'word_match'
                                 })
-                                part_matched_in_bio = True
                                 break
+                        break
+        
+        # THIRD: Check skills data as supporting evidence
+        for skill, value in lawyer['skills'].items():
+            skill_lower = skill.lower()
             
-            # THIRD: Check skills data as supporting evidence (LOWEST PRIORITY)
-            part_matched_in_skills = False
-            
-            # Check each skill against the query part
-            for skill, value in lawyer['skills'].items():
-                skill_lower = skill.lower()
-                
-                # More precise matching - prefer exact matches over partial
+            for query_part in query_parts:
                 if skill_lower == query_part.strip():
-                    # Exact match gets moderate score (lower than bio)
                     skill_score += value * 1.0
                     matched_skills.append({'skill': skill, 'value': value, 'match_type': 'exact'})
-                    part_matched_in_skills = True
                 elif query_part.strip() in skill_lower:
-                    # Contains match
                     skill_score += value * 0.7
                     matched_skills.append({'skill': skill, 'value': value, 'match_type': 'contains'})
-                    part_matched_in_skills = True
-                elif any(word in skill_lower for word in query_part.split() if len(word) > 3):
-                    # Word match (for words > 3 chars to avoid matching small words)
+                elif any(word in skill_lower for word in query_part.split() if len(word) > 2):
                     skill_score += value * 0.3
                     matched_skills.append({'skill': skill, 'value': value, 'match_type': 'word'})
-                    part_matched_in_skills = True
-            
-            # For multi-criteria queries, check if this part matched in blurb, bio, or skills
-            if len(query_parts) > 1 and not (part_matched_in_blurb or part_matched_in_bio or part_matched_in_skills):
-                all_criteria_matched = False
         
-        # For multi-criteria queries, if not all criteria matched, reset scores
-        if len(query_parts) > 1 and not all_criteria_matched:
-            bio_score = 0
-            blurb_score = 0
-            skill_score = 0
-            matched_bio_reasons = []
-            matched_blurb_reasons = []
-            matched_skills = []
-        
-        # Calculate final score with blurb_score weighted highest, then bio_score, then skills
+        # Calculate final score
         final_score = (blurb_score * 3) + (bio_score * 2) + skill_score
         
-        # Add lawyer to matches if scored
-        if final_score > 0:
-            # Remove duplicate skills and bio reasons
-            unique_skills = {}
-            for skill in matched_skills:
-                skill_name = skill['skill']
-                if skill_name not in unique_skills or skill['value'] > unique_skills[skill_name]['value']:
-                    unique_skills[skill_name] = skill
-            
-            unique_bio_reasons = {}
-            for reason in matched_bio_reasons:
-                field = reason['field']
-                if field not in unique_bio_reasons:
-                    unique_bio_reasons[field] = reason
-            
-            unique_blurb_reasons = {}
-            for reason in matched_blurb_reasons:
-                field = reason['field']
-                if field not in unique_blurb_reasons:
-                    unique_blurb_reasons[field] = reason
-            
-            matches.append({
-                'lawyer': lawyer,
-                'score': final_score,
-                'bio_score': bio_score,
-                'blurb_score': blurb_score,  # NEW
-                'skill_score': skill_score,
-                'matched_bio_reasons': list(unique_bio_reasons.values()),
-                'matched_blurb_reasons': list(unique_blurb_reasons.values()),  # NEW
-                'matched_skills': sorted(list(unique_skills.values()), key=lambda x: x['value'], reverse=True)[:5]
-            })
+        # Remove duplicates
+        unique_skills = {}
+        for skill in matched_skills:
+            skill_name = skill['skill']
+            if skill_name not in unique_skills or skill['value'] > unique_skills[skill_name]['value']:
+                unique_skills[skill_name] = skill
+        
+        unique_bio_reasons = {}
+        for reason in matched_bio_reasons:
+            field = reason['field']
+            if field not in unique_bio_reasons:
+                unique_bio_reasons[field] = reason
+        
+        unique_blurb_reasons = {}
+        for reason in matched_blurb_reasons:
+            field = reason['field']
+            if field not in unique_blurb_reasons:
+                unique_blurb_reasons[field] = reason
+        
+        # Add ALL lawyers to the list (even with score 0)
+        all_lawyers.append({
+            'lawyer': lawyer,
+            'score': final_score,
+            'bio_score': bio_score,
+            'blurb_score': blurb_score,
+            'skill_score': skill_score,
+            'matched_bio_reasons': list(unique_bio_reasons.values()),
+            'matched_blurb_reasons': list(unique_blurb_reasons.values()),
+            'matched_skills': sorted(list(unique_skills.values()), key=lambda x: x['value'], reverse=True)[:5]
+        })
     
-    # Sort by final score and take top N
-    return sorted(matches, key=lambda x: x['score'], reverse=True)[:top_n]
+    # Sort by final score and take top N (but ensure we always return up to top_n lawyers)
+    sorted_lawyers = sorted(all_lawyers, key=lambda x: x['score'], reverse=True)
+    
+    # If we have fewer matches than requested, add random lawyers to fill up to top_n
+    if len(sorted_lawyers) < top_n:
+        return sorted_lawyers  # Return all available
+    else:
+        return sorted_lawyers[:top_n]
 
 # MODIFIED: Updated function to format Claude's analysis prompt emphasizing bio.blurb priority
 def format_claude_prompt(query, matches):
@@ -1349,9 +1328,9 @@ st.markdown("Match client legal needs with the right lawyer based on **biographi
 if st.session_state.get('show_admin_dashboard', False) and st.session_state.get('admin_mode', False):
     show_admin_dashboard()
     # Add button to return to main app
-    if st.button("Return to Main App"):
+    if st.button("Return to Main App", key="return_to_main"):
         st.session_state.show_admin_dashboard = False
-        st.experimental_rerun()
+        st.rerun()
 else:
     # Load data
     data = load_lawyer_data()
@@ -1453,12 +1432,14 @@ else:
                             <div class="practice-area">Practice Area: {lawyer['practice_area']}</div>
                         """
                         
-                        # PRIORITY: Show bio.blurb first if available
+                        # PRIORITY: Show bio.blurb first if available (CLEANED UP)
                         if bio.get('blurb'):
+                            # Truncate blurb to avoid duplication and clean display
+                            clean_blurb = bio['blurb'][:400] + ('...' if len(bio['blurb']) > 400 else '')
                             html_output += f'''
                             <div class="bio-blurb">
                                 <strong>🎯 Bio Profile:</strong><br/>
-                                {bio['blurb'][:500]}{'...' if len(bio['blurb']) > 500 else ''}
+                                {clean_blurb}
                             </div>
                             '''
                         
@@ -1568,10 +1549,10 @@ else:
                 # Action buttons for results
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("📧 Email These Matches to Requester", use_container_width=True):
+                    if st.button("📧 Email These Matches to Requester", key="email_matches", use_container_width=True):
                         st.success("Match results have been emailed to the requester!")
                 with col2:
-                    if st.button("📆 Schedule Consultation", use_container_width=True):
+                    if st.button("📆 Schedule Consultation", key="schedule_consult", use_container_width=True):
                         st.success("Consultation has been scheduled with these lawyers!")
                 
                 # Add real-time feedback
