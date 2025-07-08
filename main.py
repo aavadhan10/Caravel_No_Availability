@@ -691,14 +691,14 @@ def match_lawyers(data, query, top_n=10):
     # Sort by final score and take top N
     return sorted(matches, key=lambda x: x['score'], reverse=True)[:top_n]
 
-# Updated function to format Claude's analysis prompt with BIOGRAPHICAL DATA as PRIMARY FOCUS
+# Updated function to format Claude's analysis prompt with clearer structure
 def format_claude_prompt(query, matches):
     prompt = f"""
-PRIORITY: Base your analysis PRIMARILY on biographical information, experience, and background. This biographical data is the most reliable and important information for matching lawyers to client needs.
+I need to analyze and provide detailed reasoning for why specific lawyers match a client's legal needs based on their expertise, skills, and background.
 
 Client's Legal Need: "{query}"
 
-For each lawyer below, analyze why they would be an excellent match based PRIMARILY on their biographical information, professional background, and experience. Use skills data only as supporting evidence.
+I'll provide you with information about each matching lawyer. For each lawyer, please provide a detailed, specific explanation of why they would be an excellent match for this client need. Focus on their biographical information, expertise, and experience.
 
 """
     
@@ -709,77 +709,68 @@ For each lawyer below, analyze why they would be an excellent match based PRIMAR
         bio = lawyer.get('bio', {})
         
         prompt += f"LAWYER {i}: {lawyer['name']}\n"
-        prompt += "=" * 50 + "\n"
+        prompt += "---------------------------------------------\n"
         
-        # BIOGRAPHICAL INFORMATION COMES FIRST AND IS MOST IMPORTANT
-        prompt += "** PRIMARY BIOGRAPHICAL INFORMATION (USE THIS AS MAIN BASIS FOR ANALYSIS) **\n"
-        
-        # Add all biographical information with clear emphasis
-        bio_sections = []
-        if bio.get('level'):
-            bio_sections.append(f"Level/Title: {bio['level']}")
-        if bio.get('call'):
-            bio_sections.append(f"Called to Bar: {bio['call']}")
-        if bio.get('jurisdiction'):
-            bio_sections.append(f"Jurisdiction: {bio['jurisdiction']}")
-        if bio.get('location'):
-            bio_sections.append(f"Location: {bio['location']}")
-        if bio.get('practice_areas'):
-            bio_sections.append(f"Practice Areas & Specializations: {bio['practice_areas']}")
-        if bio.get('industry_experience'):
-            bio_sections.append(f"Industry Experience: {bio['industry_experience']}")
-        if bio.get('previous_in_house'):
-            bio_sections.append(f"Previous In-House Experience: {bio['previous_in_house']}")
-        if bio.get('previous_firms'):
-            bio_sections.append(f"Previous Law Firms: {bio['previous_firms']}")
-        if bio.get('education'):
-            bio_sections.append(f"Education: {bio['education']}")
-        if bio.get('awards'):
-            bio_sections.append(f"Awards & Recognition: {bio['awards']}")
-        if bio.get('expert'):
-            bio_sections.append(f"Areas of Expertise: {bio['expert']}")
-        if bio.get('notable_items'):
-            bio_sections.append(f"Notable Experience & Background: {bio['notable_items']}")
-        
-        for section in bio_sections:
-            prompt += f"- {section}\n"
-        
-        # Highlight what specifically matched in the search
+        # Add matched biographical information FIRST - this is what matched in the search
         if bio_reasons:
-            prompt += "\n** SPECIFIC BIOGRAPHICAL FACTORS THAT MATCHED THE SEARCH **\n"
+            prompt += "MATCHING BIOGRAPHICAL FACTORS:\n"
             for reason in bio_reasons:
                 field_name = reason['field'].replace('_', ' ').title()
                 prompt += f"- {field_name}: {reason['value']}\n"
+            prompt += "\n"
         
+        # Add full biographical information
+        prompt += "BIOGRAPHICAL INFORMATION:\n"
+        if bio.get('level'):
+            prompt += f"- Level/Title: {bio['level']}\n"
+        if bio.get('call'):
+            prompt += f"- Called to Bar: {bio['call']}\n"
+        if bio.get('jurisdiction'):
+            prompt += f"- Jurisdiction: {bio['jurisdiction']}\n"
+        if bio.get('location'):
+            prompt += f"- Location: {bio['location']}\n"
+        if bio.get('practice_areas'):
+            prompt += f"- Practice Areas: {bio['practice_areas']}\n"
+        if bio.get('industry_experience'):
+            prompt += f"- Industry Experience: {bio['industry_experience']}\n"
+        if bio.get('previous_in_house'):
+            prompt += f"- Previous In-House Experience: {bio['previous_in_house']}\n"
+        if bio.get('previous_firms'):
+            prompt += f"- Previous Law Firms: {bio['previous_firms']}\n"
+        if bio.get('education'):
+            prompt += f"- Education: {bio['education']}\n"
+        if bio.get('awards'):
+            prompt += f"- Awards/Recognition: {bio['awards']}\n"
+        if bio.get('expert'):
+            prompt += f"- Areas of Expertise: {bio['expert']}\n"
+        if bio.get('notable_items'):
+            prompt += f"- Notable Experience: {bio['notable_items']}\n"
         prompt += "\n"
             
-        # Add skills as SUPPORTING information only
+        # Add skills information as supporting evidence
         if skills:
-            prompt += "** SUPPORTING SKILLS DATA (use only to supplement biographical analysis) **\n"
+            prompt += "SELF-REPORTED SKILLS:\n"
             for skill in skills:
                 prompt += f"- {skill['skill']}: {skill['value']} points\n"
         
-        prompt += "\n" + "=" * 50 + "\n\n"
+        prompt += "\n\n"
     
     prompt += """
-INSTRUCTIONS FOR ANALYSIS:
+For each lawyer, write ONE detailed paragraph (5-7 sentences) explaining why they are an excellent match for this client's needs.
 
-1. **PRIORITIZE BIOGRAPHICAL DATA**: Base your analysis primarily on the biographical information above. This includes practice areas, industry experience, previous firms, in-house experience, education, and expertise areas.
-
-2. **Focus on Real Experience**: Highlight specific practice areas, industry experience, previous roles, and educational background that directly relate to the client's needs.
-
-3. **Use Skills as Supporting Evidence Only**: Reference self-reported skills only to support and validate the biographical information, not as the primary basis for the match.
-
-4. **Be Specific and Detailed**: Mention specific companies, industries, practice areas, and experiences from their background that make them relevant.
-
-For each lawyer, write ONE comprehensive paragraph (5-7 sentences) explaining why they are an excellent match for this client's needs, focusing primarily on their biographical information and professional background.
+Your explanation should:
+1. Highlight relevant biographical details that match the client's needs
+2. Mention specific practice areas, industry experience, or previous roles that are relevant
+3. Include educational background if relevant
+4. Reference their self-reported skills that support their expertise
+5. Be specific and substantive - avoid generic language
 
 Format your response as a JSON object where each key is the lawyer's name and each value is your explanation paragraph:
 
 {
-    "Lawyer Name 1": "Detailed explanation paragraph focusing on biographical background...",
-    "Lawyer Name 2": "Detailed explanation paragraph focusing on biographical background...",
-    "Lawyer Name 3": "Detailed explanation paragraph focusing on biographical background..."
+    "Lawyer Name 1": "Detailed explanation paragraph for this lawyer...",
+    "Lawyer Name 2": "Detailed explanation paragraph for this lawyer...",
+    "Lawyer Name 3": "Detailed explanation paragraph for this lawyer..."
 }
 
 DO NOT include any additional text outside of this JSON structure.
@@ -1471,5 +1462,5 @@ else:
         "This internal tool uses biographical information and self-reported expertise from lawyers in the database. "
         "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
         f"Currently loaded: {len(data['lawyers']) if data else 0} lawyers with {len(data['unique_skills']) if data else 0} unique skills. "
-        "Last updated: April 18, 2025"
+        "Last updated: July 8, 2025"
     )
