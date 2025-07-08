@@ -297,230 +297,254 @@ st.sidebar.info(
     "For assistance with the matching tool or to add a lawyer to the database, contact the AI team at officeofinnovation@brieflylegal.com"
 )
 
-# Function to load and process the CSV data
-@lru_cache(maxsize=1)  # Cache the result to avoid reloading
+# MODIFIED: Flexible CSV reading functions
+def detect_csv_structure(df):
+    """
+    Analyze the CSV structure to understand what data is available
+    Returns a dictionary with information about the detected structure
+    """
+    structure = {
+        'name_columns': [],
+        'email_columns': [],
+        'skill_columns': [],
+        'bio_columns': [],
+        'text_columns': [],
+        'total_columns': len(df.columns)
+    }
+    
+    # Convert all column names to lowercase for easier matching
+    columns_lower = [col.lower() for col in df.columns]
+    
+    # Detect name columns
+    name_patterns = ['name', 'submitter name', 'first name', 'last name', 'lawyer', 'attorney']
+    for i, col in enumerate(columns_lower):
+        if any(pattern in col for pattern in name_patterns):
+            structure['name_columns'].append(df.columns[i])
+    
+    # Detect email columns
+    email_patterns = ['email', 'mail', 'contact']
+    for i, col in enumerate(columns_lower):
+        if any(pattern in col for pattern in email_patterns):
+            structure['email_columns'].append(df.columns[i])
+    
+    # Detect skill columns (columns with numeric values or skill-like names)
+    skill_patterns = ['skill', 'expertise', 'experience', 'practice', 'area', 'competency']
+    for i, col in enumerate(columns_lower):
+        # Check if it's a skill column by name pattern
+        if any(pattern in col for pattern in skill_patterns):
+            structure['skill_columns'].append(df.columns[i])
+        # Or if it contains mostly numeric values
+        elif df[df.columns[i]].dtype in ['int64', 'float64']:
+            structure['skill_columns'].append(df.columns[i])
+    
+    # Detect biographical columns
+    bio_patterns = ['level', 'title', 'jurisdiction', 'location', 'education', 'firm', 'company', 
+                   'experience', 'industry', 'language', 'award', 'recognition', 'call', 'bar',
+                   'previous', 'notable', 'expert', 'bio', 'background', 'qualification']
+    for i, col in enumerate(columns_lower):
+        if any(pattern in col for pattern in bio_patterns):
+            structure['bio_columns'].append(df.columns[i])
+    
+    # All text columns that aren't already categorized
+    for col in df.columns:
+        if (col not in structure['name_columns'] and 
+            col not in structure['email_columns'] and 
+            col not in structure['skill_columns'] and 
+            col not in structure['bio_columns'] and
+            df[col].dtype == 'object'):
+            structure['text_columns'].append(col)
+    
+    return structure
+
+def extract_lawyer_info_flexible(row, structure):
+    """
+    Extract lawyer information from a row based on detected structure
+    """
+    # Extract name - try multiple strategies
+    name = ""
+    if structure['name_columns']:
+        # If we have specific name columns, use them
+        name_parts = []
+        for col in structure['name_columns']:
+            if pd.notna(row[col]) and str(row[col]).strip():
+                name_parts.append(str(row[col]).strip())
+        name = " ".join(name_parts)
+    
+    # If no name found, use first non-empty text column
+    if not name and structure['text_columns']:
+        for col in structure['text_columns'][:3]:  # Check first 3 text columns
+            if pd.notna(row[col]) and str(row[col]).strip():
+                name = str(row[col]).strip()
+                break
+    
+    # Extract email
+    email = ""
+    if structure['email_columns']:
+        for col in structure['email_columns']:
+            if pd.notna(row[col]) and str(row[col]).strip():
+                email = str(row[col]).strip()
+                break
+    
+    # If no email found, generate a placeholder
+    if not email:
+        email = f"{name.lower().replace(' ', '.')}@example.com"
+    
+    # Extract skills
+    skills = {}
+    for col in structure['skill_columns']:
+        if pd.notna(row[col]):
+            value = row[col]
+            # Convert to numeric if possible
+            try:
+                value = float(value)
+                if value > 0:
+                    # Clean up column name for skill
+                    skill_name = col.replace('(Skill', '').replace(')', '').strip()
+                    # Remove numbers from skill names
+                    skill_name = re.sub(r'\s+\d+\s*$', '', skill_name).strip()
+                    skills[skill_name] = value
+            except (ValueError, TypeError):
+                # If it's text, still include it with a default value
+                if str(value).strip():
+                    skill_name = col.strip()
+                    skills[skill_name] = 1.0
+    
+    # Extract biographical information
+    bio = {}
+    bio_field_mapping = {
+        'level': ['level', 'title', 'position', 'rank'],
+        'call': ['call', 'bar', 'admission'],
+        'jurisdiction': ['jurisdiction', 'province', 'state'],
+        'location': ['location', 'office', 'city'],
+        'practice_areas': ['practice', 'area', 'specialization', 'expertise'],
+        'industry_experience': ['industry', 'sector', 'business'],
+        'languages': ['language', 'linguistic'],
+        'previous_in_house': ['in-house', 'in house', 'corporate', 'company'],
+        'previous_firms': ['firm', 'previous', 'prior'],
+        'education': ['education', 'school', 'university', 'degree'],
+        'awards': ['award', 'recognition', 'honor'],
+        'notable_items': ['notable', 'personal', 'detail', 'note'],
+        'expert': ['expert', 'specialty', 'focus']
+    }
+    
+    # Initialize bio fields
+    for field in bio_field_mapping.keys():
+        bio[field] = ""
+    
+    # Map columns to bio fields
+    for col in structure['bio_columns'] + structure['text_columns']:
+        col_lower = col.lower()
+        value = str(row[col]) if pd.notna(row[col]) else ""
+        
+        if value.strip():
+            # Find the best matching bio field
+            best_match = None
+            for bio_field, patterns in bio_field_mapping.items():
+                if any(pattern in col_lower for pattern in patterns):
+                    if not bio[bio_field]:  # Only set if not already set
+                        bio[bio_field] = value
+                        best_match = bio_field
+                        break
+            
+            # If no specific match, add to notable_items or expert
+            if not best_match:
+                if not bio['notable_items']:
+                    bio['notable_items'] = value
+                elif not bio['expert']:
+                    bio['expert'] = value
+    
+    return {
+        'name': name,
+        'email': email,
+        'skills': skills,
+        'bio': bio
+    }
+
+# MODIFIED: Main data loading function to handle any CSV structure
+@lru_cache(maxsize=1)
 def load_lawyer_data():
     try:
-        # Load the skills data
-        skills_df = pd.read_csv('combined_unique.csv')
-        skills_data = process_lawyer_data(skills_df)
+        # Try to load the main CSV file - try multiple possible names
+        possible_files = ['combined_unique.csv', 'Caravel_New.csv', 'lawyers.csv', 'data.csv']
+        df = None
         
-        # Load the biographical data
-        bio_df = pd.read_csv('Caravel_New.csv')
-        bio_data = process_bio_data(bio_df)
+        for filename in possible_files:
+            try:
+                df = pd.read_csv(filename)
+                st.info(f"Successfully loaded data from {filename}")
+                break
+            except FileNotFoundError:
+                continue
         
-        # Combine the data
-        combined_data = combine_lawyer_data(skills_data, bio_data)
+        if df is None:
+            st.error("No CSV file found. Please ensure your CSV file is in the same directory.")
+            return None
         
-        # Verify and correct practice areas
-        verified_data = verify_practice_areas(combined_data)
+        # Analyze the CSV structure
+        structure = detect_csv_structure(df)
         
-        return verified_data
+        # Debug information
+        with st.expander("CSV Structure Analysis", expanded=False):
+            st.write("Detected Structure:")
+            st.json(structure)
+            st.write("Sample of first few rows:")
+            st.dataframe(df.head())
+        
+        # Process the data
+        lawyers = []
+        practice_areas = ["Corporate", "Litigation", "IP", "Employment", "Privacy", "Finance", "Real Estate", "Tax"]
+        rate_ranges = ["$400-500/hr", "$500-600/hr", "$600-700/hr", "$700-800/hr", "$800-900/hr"]
+        
+        for _, row in df.iterrows():
+            try:
+                lawyer_info = extract_lawyer_info_flexible(row, structure)
+                
+                # Skip if no name found
+                if not lawyer_info['name']:
+                    continue
+                
+                # Add mock data for fields that aren't in the CSV
+                lawyer_info['practice_area'] = np.random.choice(practice_areas)
+                lawyer_info['billable_rate'] = np.random.choice(rate_ranges)
+                lawyer_info['last_client'] = f"Client {np.random.randint(100, 999)}"
+                
+                # Try to infer practice area from bio data if available
+                if lawyer_info['bio'].get('practice_areas'):
+                    practice_areas_text = lawyer_info['bio']['practice_areas'].lower()
+                    if 'corporate' in practice_areas_text or 'commercial' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'Corporate'
+                    elif 'litigation' in practice_areas_text or 'dispute' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'Litigation'
+                    elif 'intellectual property' in practice_areas_text or 'ip' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'IP'
+                    elif 'employ' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'Employment'
+                    elif 'privacy' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'Privacy'
+                
+                lawyers.append(lawyer_info)
+                
+            except Exception as e:
+                st.warning(f"Error processing row: {e}")
+                continue
+        
+        # Create unique skills list
+        all_skills = set()
+        for lawyer in lawyers:
+            all_skills.update(lawyer['skills'].keys())
+        
+        return {
+            'lawyers': lawyers,
+            'unique_skills': list(all_skills),
+            'structure': structure
+        }
+        
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return None
 
-def process_lawyer_data(df):
-    # Get all skill columns
-    skill_columns = [col for col in df.columns if '(Skill' in col]
-    
-    # Create a map of normalized skill names
-    skill_map = {}
-    for col in skill_columns:
-        match = re.match(r'(.*) \(Skill \d+\)', col)
-        if match:
-            skill_name = match.group(1)
-            if skill_name not in skill_map:
-                skill_map[skill_name] = []
-            skill_map[skill_name].append(col)
-    
-    # Function to get max skill value across duplicate columns
-    def get_max_skill_value(lawyer_row, skill_name):
-        columns = skill_map.get(skill_name, [])
-        values = [lawyer_row[col] for col in columns if pd.notna(lawyer_row[col])]
-        return max(values) if values else 0
-    
-    # Create lawyer profiles with mock data for demo purposes
-    lawyers = []
-    practice_areas = ["Corporate", "Litigation", "IP", "Employment", "Privacy", "Finance", "Real Estate", "Tax"]
-    rate_ranges = ["$400-500/hr", "$500-600/hr", "$600-700/hr", "$700-800/hr", "$800-900/hr"]
-    
-    for _, row in df.iterrows():
-        lawyer_name = row['Submitter Name']
-        
-        profile = {
-            'name': lawyer_name,
-            'email': row['Submitter Email'],
-            'skills': {},
-            # Add mock data for other fields
-            'practice_area': np.random.choice(practice_areas),
-            'billable_rate': np.random.choice(rate_ranges),
-            'last_client': f"Client {np.random.randint(100, 999)}"
-        }
-        
-        # Extract skills with non-zero values
-        for skill_name in skill_map:
-            value = get_max_skill_value(row, skill_name)
-            if value > 0:
-                profile['skills'][skill_name] = value
-        
-        lawyers.append(profile)
-    
-    return {
-        'lawyers': lawyers,
-        'skill_map': skill_map,
-        'unique_skills': list(skill_map.keys())
-    }
-
-# Function to process the biographical data
-def process_bio_data(df):
-    lawyers_bio = {}
-    
-    for _, row in df.iterrows():
-        # Convert first and last names to string and handle NaN values
-        first_name = str(row['First Name']).strip() if pd.notna(row['First Name']) else ""
-        last_name = str(row['Last Name']).strip() if pd.notna(row['Last Name']) else ""
-        
-        full_name = f"{first_name} {last_name}".strip()
-        
-        # Skip empty names
-        if not full_name:
-            continue
-        
-        bio = {
-            'level': str(row['Level/Title']) if pd.notna(row['Level/Title']) else "",
-            'call': str(row['Call']) if pd.notna(row['Call']) else "",
-            'jurisdiction': str(row['Jurisdiction']) if pd.notna(row['Jurisdiction']) else "",
-            'location': str(row['Location']) if pd.notna(row['Location']) else "",
-            'practice_areas': str(row['Area of Practise + Add Info']) if pd.notna(row['Area of Practise + Add Info']) else "",
-            'industry_experience': str(row['Industry Experience']) if pd.notna(row['Industry Experience']) else "",
-            'languages': str(row['Languages']) if pd.notna(row['Languages']) else "",
-            'previous_in_house': str(row['Previous In-House Companies']) if pd.notna(row['Previous In-House Companies']) else "",
-            'previous_firms': str(row['Previous Companies/Firms']) if pd.notna(row['Previous Companies/Firms']) else "",
-            'education': str(row['Education']) if pd.notna(row['Education']) else "",
-            'awards': str(row['Awards/Recognition']) if pd.notna(row['Awards/Recognition']) else "",
-            'notable_items': str(row['Notable Items/Personal Details ']) if pd.notna(row['Notable Items/Personal Details ']) else "",
-            'expert': str(row['Expert']) if pd.notna(row['Expert']) else ""
-        }
-        
-        lawyers_bio[full_name] = bio
-    
-    return {
-        'lawyers_bio': lawyers_bio
-    }
-
-# Function to combine skills and biographical data
-def combine_lawyer_data(skills_data, bio_data):
-    if not skills_data or not bio_data:
-        return skills_data
-    
-    combined_lawyers = []
-    
-    for lawyer in skills_data['lawyers']:
-        # Try to find matching biographical data
-        name = lawyer['name']
-        bio = None
-        
-        # Try exact match
-        if name in bio_data['lawyers_bio']:
-            bio = bio_data['lawyers_bio'][name]
-        else:
-            # Try partial match
-            for bio_name, bio_info in bio_data['lawyers_bio'].items():
-                # Check if first and last name parts match
-                name_parts = name.lower().split()
-                bio_name_parts = bio_name.lower().split()
-                
-                if any(part in bio_name.lower() for part in name_parts) and any(part in name.lower() for part in bio_name_parts):
-                    bio = bio_info
-                    break
-        
-        # Add biographical data if found
-        if bio:
-            lawyer['bio'] = bio
-        else:
-            lawyer['bio'] = {
-                'level': '',
-                'call': '',
-                'jurisdiction': '',
-                'location': '',
-                'practice_areas': '',
-                'industry_experience': '',
-                'languages': '',
-                'previous_in_house': '',
-                'previous_firms': '',
-                'education': '',
-                'awards': '',
-                'notable_items': '',
-                'expert': ''
-            }
-        
-        combined_lawyers.append(lawyer)
-    
-    return {
-        'lawyers': combined_lawyers,
-        'skill_map': skills_data['skill_map'],
-        'unique_skills': skills_data['unique_skills']
-    }
-
-# Function to verify practice areas against biographical data
-def verify_practice_areas(data):
-    if not data:
-        return data
-    
-    # Create a corrected version of the data
-    corrected_data = {
-        'lawyers': [],
-        'skill_map': data['skill_map'],
-        'unique_skills': data['unique_skills']
-    }
-    
-    # Manual corrections for known issues
-    manual_corrections = {
-        'Nikki': 'Corporate',  # Corrected from Tax
-        'Frank': 'Corporate',  # Corrected from IP
-        # Add more corrections as needed
-    }
-    
-    # Process each lawyer to update practice areas based on bio data
-    for lawyer in data['lawyers']:
-        lawyer_copy = lawyer.copy()  # Create a copy to modify
-        
-        # Check if lawyer's name contains any key in manual_corrections
-        for name_part, correction in manual_corrections.items():
-            if name_part in lawyer['name']:
-                lawyer_copy['practice_area'] = correction
-                break
-        
-        # If no manual correction and bio data is available, try to infer practice area
-        if 'bio' in lawyer_copy and lawyer_copy['bio'].get('practice_areas'):
-            practice_areas = lawyer_copy['bio']['practice_areas'].lower()
-            
-            # Simple mapping of bio practice areas to main categories
-            if 'corporate' in practice_areas or 'commercial' in practice_areas or 'business' in practice_areas:
-                lawyer_copy['practice_area'] = 'Corporate'
-            elif 'litigation' in practice_areas or 'dispute' in practice_areas:
-                lawyer_copy['practice_area'] = 'Litigation'
-            elif 'intellectual property' in practice_areas or 'patent' in practice_areas or 'trademark' in practice_areas:
-                lawyer_copy['practice_area'] = 'IP'
-            elif 'employ' in practice_areas or 'labor' in practice_areas or 'labour' in practice_areas:
-                lawyer_copy['practice_area'] = 'Employment'
-            elif 'privacy' in practice_areas or 'data' in practice_areas:
-                lawyer_copy['practice_area'] = 'Privacy'
-            elif 'finance' in practice_areas or 'banking' in practice_areas:
-                lawyer_copy['practice_area'] = 'Finance'
-            elif 'real estate' in practice_areas or 'property' in practice_areas:
-                lawyer_copy['practice_area'] = 'Real Estate'
-            elif 'tax' in practice_areas:
-                lawyer_copy['practice_area'] = 'Tax'
-            # Keep original if no match
-        
-        corrected_data['lawyers'].append(lawyer_copy)
-    
-    return corrected_data
-
-# Improved match_lawyers function that prioritizes biographical data
-def match_lawyers(data, query, top_n=10):  # Changed from 5 to 10
+# Keep all the other functions exactly the same
+def match_lawyers(data, query, top_n=10):
     if not data:
         return []
     
@@ -1435,7 +1459,8 @@ else:
     # Footer
     st.markdown("---")
     st.markdown(
-        "This internal tool uses biographical information and self-reported expertise from 84 lawyers who distributed 120 points across 167 different legal skills. "
+        "This internal tool uses biographical information and self-reported expertise from lawyers in the database. "
         "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
+        f"Currently loaded: {len(data['lawyers']) if data else 0} lawyers with {len(data['unique_skills']) if data else 0} unique skills. "
         "Last updated: April 18, 2025"
     )
