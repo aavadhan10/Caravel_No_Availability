@@ -764,6 +764,7 @@ Your explanation should:
 3. Include educational background if relevant
 4. Reference their self-reported skills that support their expertise
 5. Be specific and substantive - avoid generic language
+6. ALL THE BIO INFORMATIONS IS THERE. IT'S IN CARAVEL_NEW.CSV.PRIORITIZE BIO OVER SCORE BTW AND USE THAT INFORMMATION BUT ALSO REFERENCE THE SCORE. 
 
 Format your response as a JSON object where each key is the lawyer's name and each value is your explanation paragraph:
 
