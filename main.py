@@ -228,6 +228,15 @@ h1 {
     color: #5d4037;
     font-weight: bold;
 }
+.bio-blurb {
+    background-color: #e8f5e8;
+    border-radius: 8px;
+    padding: 15px;
+    margin: 10px 0;
+    border-left: 4px solid #4caf50;
+    font-style: italic;
+    color: #2e7d32;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -297,7 +306,7 @@ st.sidebar.info(
     "For assistance with the matching tool or to add a lawyer to the database, contact the AI team at officeofinnovation@brieflylegal.com"
 )
 
-# MODIFIED: Flexible CSV reading functions
+# MODIFIED: Enhanced CSV reading functions with better bio.blurb detection
 def detect_csv_structure(df):
     """
     Analyze the CSV structure to understand what data is available
@@ -309,6 +318,7 @@ def detect_csv_structure(df):
         'skill_columns': [],
         'bio_columns': [],
         'text_columns': [],
+        'blurb_columns': [],  # NEW: specifically for bio.blurb
         'total_columns': len(df.columns)
     }
     
@@ -327,6 +337,12 @@ def detect_csv_structure(df):
         if any(pattern in col for pattern in email_patterns):
             structure['email_columns'].append(df.columns[i])
     
+    # NEW: Detect bio.blurb columns specifically
+    blurb_patterns = ['blurb', 'bio.blurb', 'biography', 'summary', 'description', 'profile']
+    for i, col in enumerate(columns_lower):
+        if any(pattern in col for pattern in blurb_patterns):
+            structure['blurb_columns'].append(df.columns[i])
+    
     # Detect skill columns (columns with numeric values or skill-like names)
     skill_patterns = ['skill', 'expertise', 'experience', 'practice', 'area', 'competency']
     for i, col in enumerate(columns_lower):
@@ -343,7 +359,9 @@ def detect_csv_structure(df):
                    'previous', 'notable', 'expert', 'bio', 'background', 'qualification']
     for i, col in enumerate(columns_lower):
         if any(pattern in col for pattern in bio_patterns):
-            structure['bio_columns'].append(df.columns[i])
+            # Don't double-count blurb columns
+            if df.columns[i] not in structure['blurb_columns']:
+                structure['bio_columns'].append(df.columns[i])
     
     # All text columns that aren't already categorized
     for col in df.columns:
@@ -351,6 +369,7 @@ def detect_csv_structure(df):
             col not in structure['email_columns'] and 
             col not in structure['skill_columns'] and 
             col not in structure['bio_columns'] and
+            col not in structure['blurb_columns'] and
             df[col].dtype == 'object'):
             structure['text_columns'].append(col)
     
@@ -359,6 +378,7 @@ def detect_csv_structure(df):
 def extract_lawyer_info_flexible(row, structure):
     """
     Extract lawyer information from a row based on detected structure
+    PRIORITIZES bio.blurb and biographical information over skills
     """
     # Extract name - try multiple strategies
     name = ""
@@ -389,7 +409,15 @@ def extract_lawyer_info_flexible(row, structure):
     if not email:
         email = f"{name.lower().replace(' ', '.')}@example.com"
     
-    # Extract skills
+    # NEW: Extract bio.blurb with highest priority
+    blurb = ""
+    if structure['blurb_columns']:
+        for col in structure['blurb_columns']:
+            if pd.notna(row[col]) and str(row[col]).strip():
+                blurb = str(row[col]).strip()
+                break
+    
+    # Extract skills (now with lower priority)
     skills = {}
     for col in structure['skill_columns']:
         if pd.notna(row[col]):
@@ -424,15 +452,20 @@ def extract_lawyer_info_flexible(row, structure):
         'education': ['education', 'school', 'university', 'degree'],
         'awards': ['award', 'recognition', 'honor'],
         'notable_items': ['notable', 'personal', 'detail', 'note'],
-        'expert': ['expert', 'specialty', 'focus']
+        'expert': ['expert', 'specialty', 'focus'],
+        'blurb': ['blurb', 'bio.blurb', 'biography', 'summary', 'description', 'profile']  # NEW
     }
     
     # Initialize bio fields
     for field in bio_field_mapping.keys():
         bio[field] = ""
     
+    # Set the blurb first if we found it
+    if blurb:
+        bio['blurb'] = blurb
+    
     # Map columns to bio fields
-    for col in structure['bio_columns'] + structure['text_columns']:
+    for col in structure['bio_columns'] + structure['text_columns'] + structure['blurb_columns']:
         col_lower = col.lower()
         value = str(row[col]) if pd.notna(row[col]) else ""
         
@@ -457,20 +490,23 @@ def extract_lawyer_info_flexible(row, structure):
         'name': name,
         'email': email,
         'skills': skills,
-        'bio': bio
+        'bio': bio,
+        'blurb': blurb  # NEW: direct access to blurb
     }
 
-# MODIFIED: Main data loading function to handle any CSV structure
+# MODIFIED: Main data loading function to handle any CSV structure with bio priority
 @lru_cache(maxsize=1)
 def load_lawyer_data():
     try:
-        # Try to load the main CSV file - try multiple possible names
-        possible_files = ['combined_unique.csv', 'Caravel_New.csv', 'lawyers.csv', 'data.csv']
+        # Try to load the main CSV file - prioritize Caravel_New.csv
+        possible_files = ['Caravel_New.csv', 'combined_unique.csv', 'lawyers.csv', 'data.csv']
         df = None
+        loaded_filename = None
         
         for filename in possible_files:
             try:
                 df = pd.read_csv(filename)
+                loaded_filename = filename
                 st.info(f"Successfully loaded data from {filename}")
                 break
             except FileNotFoundError:
@@ -485,10 +521,20 @@ def load_lawyer_data():
         
         # Debug information
         with st.expander("CSV Structure Analysis", expanded=False):
+            st.write(f"Loaded file: {loaded_filename}")
             st.write("Detected Structure:")
             st.json(structure)
             st.write("Sample of first few rows:")
             st.dataframe(df.head())
+            
+            # Show blurb column detection specifically
+            if structure['blurb_columns']:
+                st.write("🎯 Bio.blurb columns detected:")
+                for col in structure['blurb_columns']:
+                    st.write(f"  - {col}")
+                    # Show sample blurb content
+                    sample_blurb = df[col].dropna().iloc[0] if not df[col].dropna().empty else "No content"
+                    st.write(f"    Sample: {str(sample_blurb)[:200]}...")
         
         # Process the data
         lawyers = []
@@ -509,17 +555,22 @@ def load_lawyer_data():
                 lawyer_info['last_client'] = f"Client {np.random.randint(100, 999)}"
                 
                 # Try to infer practice area from bio data if available
+                bio_text = ""
                 if lawyer_info['bio'].get('practice_areas'):
-                    practice_areas_text = lawyer_info['bio']['practice_areas'].lower()
-                    if 'corporate' in practice_areas_text or 'commercial' in practice_areas_text:
+                    bio_text += lawyer_info['bio']['practice_areas'].lower()
+                if lawyer_info['bio'].get('blurb'):
+                    bio_text += " " + lawyer_info['bio']['blurb'].lower()
+                
+                if bio_text:
+                    if 'corporate' in bio_text or 'commercial' in bio_text:
                         lawyer_info['practice_area'] = 'Corporate'
-                    elif 'litigation' in practice_areas_text or 'dispute' in practice_areas_text:
+                    elif 'litigation' in bio_text or 'dispute' in bio_text:
                         lawyer_info['practice_area'] = 'Litigation'
-                    elif 'intellectual property' in practice_areas_text or 'ip' in practice_areas_text:
+                    elif 'intellectual property' in bio_text or 'ip' in bio_text:
                         lawyer_info['practice_area'] = 'IP'
-                    elif 'employ' in practice_areas_text:
+                    elif 'employ' in bio_text:
                         lawyer_info['practice_area'] = 'Employment'
-                    elif 'privacy' in practice_areas_text:
+                    elif 'privacy' in bio_text:
                         lawyer_info['practice_area'] = 'Privacy'
                 
                 lawyers.append(lawyer_info)
@@ -536,14 +587,15 @@ def load_lawyer_data():
         return {
             'lawyers': lawyers,
             'unique_skills': list(all_skills),
-            'structure': structure
+            'structure': structure,
+            'loaded_file': loaded_filename
         }
         
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return None
 
-# Keep all the other functions exactly the same
+# MODIFIED: Enhanced matching function that prioritizes bio/blurb over skills
 def match_lawyers(data, query, top_n=10):
     if not data:
         return []
@@ -575,22 +627,55 @@ def match_lawyers(data, query, top_n=10):
             continue
             
         bio_score = 0
+        blurb_score = 0  # NEW: separate score for bio.blurb
         skill_score = 0
         matched_bio_reasons = []
+        matched_blurb_reasons = []  # NEW
         matched_skills = []
         all_criteria_matched = True if len(query_parts) > 1 else False
         
-        # FIRST: Check biographical data for matches
+        # FIRST: Check bio.blurb for matches (HIGHEST PRIORITY)
         bio = lawyer.get('bio', {})
+        blurb_text = bio.get('blurb', '').lower()
         
-        # Create a single text string from all biographical data to search
+        if blurb_text:
+            for query_part in query_parts:
+                part_matched_in_blurb = False
+                
+                # Check for exact or partial matches in blurb
+                if query_part.strip() in blurb_text:
+                    blurb_score += 10  # HIGHEST score for blurb matches
+                    matched_blurb_reasons.append({
+                        'field': 'bio.blurb',
+                        'value': bio.get('blurb', ''),
+                        'match_type': 'exact_phrase'
+                    })
+                    part_matched_in_blurb = True
+                
+                # For multi-criteria queries, track if each part matched in blurb
+                if not part_matched_in_blurb:
+                    for word in query_part.split():
+                        if word in blurb_text and len(word) > 3:  # Avoid matching small words
+                            blurb_score += 6  # High score for word matches in blurb
+                            matched_blurb_reasons.append({
+                                'field': 'bio.blurb',
+                                'value': bio.get('blurb', ''),
+                                'match_type': 'word_match'
+                            })
+                            part_matched_in_blurb = True
+                            break
+        
+        # SECOND: Check other biographical data for matches
+        # Create a single text string from all biographical data to search (excluding blurb)
         bio_text = " ".join([
             bio.get('practice_areas', ''),
             bio.get('expert', ''),
             bio.get('industry_experience', ''),
             bio.get('notable_items', ''),
             bio.get('previous_in_house', ''),
-            bio.get('previous_firms', '')
+            bio.get('previous_firms', ''),
+            bio.get('education', ''),
+            bio.get('awards', '')
         ]).lower()
         
         # Check each query part against biographical data
@@ -599,14 +684,15 @@ def match_lawyers(data, query, top_n=10):
             
             # Check for exact or partial matches in biographical data
             if query_part.strip() in bio_text:
-                bio_score += 5  # High score for bio matches
+                bio_score += 7  # High score for bio matches (but lower than blurb)
                 
                 # Determine which bio field matched
                 for field, value in bio.items():
-                    if value and query_part.strip() in value.lower():
+                    if field != 'blurb' and value and query_part.strip() in value.lower():
                         matched_bio_reasons.append({
                             'field': field,
-                            'value': value
+                            'value': value,
+                            'match_type': 'exact_phrase'
                         })
                         part_matched_in_bio = True
             
@@ -614,19 +700,20 @@ def match_lawyers(data, query, top_n=10):
             if not part_matched_in_bio:
                 for word in query_part.split():
                     if word in bio_text and len(word) > 3:  # Avoid matching small words
-                        bio_score += 2
+                        bio_score += 4
                         
                         # Determine which bio field matched
                         for field, value in bio.items():
-                            if value and word in value.lower():
+                            if field != 'blurb' and value and word in value.lower():
                                 matched_bio_reasons.append({
                                     'field': field,
-                                    'value': value
+                                    'value': value,
+                                    'match_type': 'word_match'
                                 })
                                 part_matched_in_bio = True
                                 break
             
-            # SECOND: Check skills data as a cross-reference
+            # THIRD: Check skills data as supporting evidence (LOWEST PRIORITY)
             part_matched_in_skills = False
             
             # Check each skill against the query part
@@ -635,34 +722,36 @@ def match_lawyers(data, query, top_n=10):
                 
                 # More precise matching - prefer exact matches over partial
                 if skill_lower == query_part.strip():
-                    # Exact match gets higher score
-                    skill_score += value * 1.5
-                    matched_skills.append({'skill': skill, 'value': value})
+                    # Exact match gets moderate score (lower than bio)
+                    skill_score += value * 1.0
+                    matched_skills.append({'skill': skill, 'value': value, 'match_type': 'exact'})
                     part_matched_in_skills = True
                 elif query_part.strip() in skill_lower:
                     # Contains match
-                    skill_score += value
-                    matched_skills.append({'skill': skill, 'value': value})
+                    skill_score += value * 0.7
+                    matched_skills.append({'skill': skill, 'value': value, 'match_type': 'contains'})
                     part_matched_in_skills = True
                 elif any(word in skill_lower for word in query_part.split() if len(word) > 3):
                     # Word match (for words > 3 chars to avoid matching small words)
-                    skill_score += value * 0.5
-                    matched_skills.append({'skill': skill, 'value': value})
+                    skill_score += value * 0.3
+                    matched_skills.append({'skill': skill, 'value': value, 'match_type': 'word'})
                     part_matched_in_skills = True
             
-            # For multi-criteria queries, check if this part matched in either bio or skills
-            if len(query_parts) > 1 and not (part_matched_in_bio or part_matched_in_skills):
+            # For multi-criteria queries, check if this part matched in blurb, bio, or skills
+            if len(query_parts) > 1 and not (part_matched_in_blurb or part_matched_in_bio or part_matched_in_skills):
                 all_criteria_matched = False
         
         # For multi-criteria queries, if not all criteria matched, reset scores
         if len(query_parts) > 1 and not all_criteria_matched:
             bio_score = 0
+            blurb_score = 0
             skill_score = 0
             matched_bio_reasons = []
+            matched_blurb_reasons = []
             matched_skills = []
         
-        # Calculate final score with bio_score weighted higher
-        final_score = (bio_score * 2) + skill_score
+        # Calculate final score with blurb_score weighted highest, then bio_score, then skills
+        final_score = (blurb_score * 3) + (bio_score * 2) + skill_score
         
         # Add lawyer to matches if scored
         if final_score > 0:
@@ -679,26 +768,34 @@ def match_lawyers(data, query, top_n=10):
                 if field not in unique_bio_reasons:
                     unique_bio_reasons[field] = reason
             
+            unique_blurb_reasons = {}
+            for reason in matched_blurb_reasons:
+                field = reason['field']
+                if field not in unique_blurb_reasons:
+                    unique_blurb_reasons[field] = reason
+            
             matches.append({
                 'lawyer': lawyer,
                 'score': final_score,
                 'bio_score': bio_score,
+                'blurb_score': blurb_score,  # NEW
                 'skill_score': skill_score,
                 'matched_bio_reasons': list(unique_bio_reasons.values()),
+                'matched_blurb_reasons': list(unique_blurb_reasons.values()),  # NEW
                 'matched_skills': sorted(list(unique_skills.values()), key=lambda x: x['value'], reverse=True)[:5]
             })
     
     # Sort by final score and take top N
     return sorted(matches, key=lambda x: x['score'], reverse=True)[:top_n]
 
-# Updated function to format Claude's analysis prompt with clearer structure
+# MODIFIED: Updated function to format Claude's analysis prompt emphasizing bio.blurb priority
 def format_claude_prompt(query, matches):
     prompt = f"""
-I need to analyze and provide detailed reasoning for why specific lawyers match a client's legal needs based on their expertise, skills, and background.
+I need to analyze and provide detailed reasoning for why specific lawyers match a client's legal needs. You must PRIORITIZE biographical information (especially bio.blurb) over skill scores, while still referencing the scores as supporting evidence.
 
 Client's Legal Need: "{query}"
 
-I'll provide you with information about each matching lawyer. For each lawyer, please provide a detailed, specific explanation of why they would be an excellent match for this client need. Focus on their biographical information, expertise, and experience.
+For each lawyer, I'll provide their bio.blurb (most important), other biographical details, and self-reported skills. Focus primarily on the bio.blurb and biographical information to explain the match.
 
 """
     
@@ -706,20 +803,24 @@ I'll provide you with information about each matching lawyer. For each lawyer, p
         lawyer = match['lawyer']
         skills = match.get('matched_skills', [])
         bio_reasons = match.get('matched_bio_reasons', [])
+        blurb_reasons = match.get('matched_blurb_reasons', [])
         bio = lawyer.get('bio', {})
         
         prompt += f"LAWYER {i}: {lawyer['name']}\n"
-        prompt += "---------------------------------------------\n"
+        prompt += "=============================================\n"
         
-        # Add matched biographical information FIRST - this is what matched in the search
-        if bio_reasons:
-            prompt += "MATCHING BIOGRAPHICAL FACTORS:\n"
-            for reason in bio_reasons:
-                field_name = reason['field'].replace('_', ' ').title()
-                prompt += f"- {field_name}: {reason['value']}\n"
-            prompt += "\n"
+        # PRIORITY 1: Bio.blurb (MOST IMPORTANT)
+        if bio.get('blurb'):
+            prompt += "🎯 BIO.BLURB (PRIMARY MATCH FACTOR):\n"
+            prompt += f"{bio['blurb']}\n\n"
+            
+            if blurb_reasons:
+                prompt += "BLURB MATCH DETAILS:\n"
+                for reason in blurb_reasons:
+                    prompt += f"- Match Type: {reason.get('match_type', 'general')}\n"
+                prompt += "\n"
         
-        # Add full biographical information
+        # PRIORITY 2: Other biographical information
         prompt += "BIOGRAPHICAL INFORMATION:\n"
         if bio.get('level'):
             prompt += f"- Level/Title: {bio['level']}\n"
@@ -745,59 +846,85 @@ I'll provide you with information about each matching lawyer. For each lawyer, p
             prompt += f"- Areas of Expertise: {bio['expert']}\n"
         if bio.get('notable_items'):
             prompt += f"- Notable Experience: {bio['notable_items']}\n"
+        
+        # Show which bio fields matched
+        if bio_reasons:
+            prompt += "\nMATCHED BIOGRAPHICAL FACTORS:\n"
+            for reason in bio_reasons:
+                field_name = reason['field'].replace('_', ' ').title()
+                prompt += f"- {field_name}: {reason['value']} (Match: {reason.get('match_type', 'general')})\n"
+        
         prompt += "\n"
             
-        # Add skills information as supporting evidence
+        # PRIORITY 3: Skills as supporting evidence (reference scores but don't prioritize)
         if skills:
-            prompt += "SELF-REPORTED SKILLS:\n"
+            prompt += "SUPPORTING SKILL SCORES:\n"
             for skill in skills:
-                prompt += f"- {skill['skill']}: {skill['value']} points\n"
+                prompt += f"- {skill['skill']}: {skill['value']} points ({skill.get('match_type', 'general')} match)\n"
+        
+        # Show match scores for reference
+        prompt += f"\nMATCH SCORES (for reference only):\n"
+        prompt += f"- Bio.Blurb Score: {match.get('blurb_score', 0)}\n"
+        prompt += f"- Biographical Score: {match.get('bio_score', 0)}\n"
+        prompt += f"- Skills Score: {match.get('skill_score', 0)}\n"
+        prompt += f"- Total Score: {match.get('score', 0)}\n"
         
         prompt += "\n\n"
     
     prompt += """
-For each lawyer, write ONE detailed paragraph (5-7 sentences) explaining why they are an excellent match for this client's needs.
+IMPORTANT INSTRUCTIONS:
 
-Your explanation should:
-1. Highlight relevant biographical details that match the client's needs
-2. PLACE BIO importance over SKILLSETS. PLEASE USE THE CARAVEL_NEW.CSV TO showcase their whole bio AND BLURB. ALL THAT INFORMATION IS THERE ALL OF IT IS THERE. 
-2. Mention specific practice areas, industry experience, or previous roles that are relevant
-3. Include educational background if relevant
-4. Reference their self-reported skills that support their expertise
-5. Be specific and substantive - avoid generic language
-6. ALL THE BIO INFORMATIONS IS THERE. IT'S IN CARAVEL_NEW.CSV.PRIORITIZE BIO OVER SCORE BTW AND USE THAT INFORMMATION BUT ALSO REFERENCE THE SCORE. 
+For each lawyer, write ONE detailed paragraph (6-8 sentences) explaining why they are an excellent match for this client's needs.
+
+Your explanation MUST:
+1. START with and PRIORITIZE the bio.blurb information - this is the most important factor
+2. Reference relevant biographical details (practice areas, experience, education, etc.)
+3. Mention the match scores as SUPPORTING EVIDENCE, not the primary reason
+4. Be specific about how their background aligns with the client's needs
+5. Use the bio.blurb as the foundation of your analysis
+6. Reference skills scores to validate the biographical match
+7. Avoid generic language - be specific and substantive
+
+PRIORITIZATION ORDER:
+1st: Bio.blurb content (most important)
+2nd: Other biographical information
+3rd: Skills scores (supporting evidence only)
 
 Format your response as a JSON object where each key is the lawyer's name and each value is your explanation paragraph:
 
 {
-    "Lawyer Name 1": "Detailed explanation paragraph for this lawyer...",
-    "Lawyer Name 2": "Detailed explanation paragraph for this lawyer...",
-    "Lawyer Name 3": "Detailed explanation paragraph for this lawyer..."
+    "Lawyer Name 1": "Based on their bio.blurb which shows... [detailed explanation prioritizing blurb and bio over scores]",
+    "Lawyer Name 2": "Their biographical profile indicates... [detailed explanation prioritizing blurb and bio over scores]",
+    "Lawyer Name 3": "The bio.blurb reveals... [detailed explanation prioritizing blurb and bio over scores]"
 }
 
 DO NOT include any additional text outside of this JSON structure.
 """
     return prompt
 
-# Add this function to generate a fallback explanation for a lawyer
+# MODIFIED: Enhanced fallback explanation generator that prioritizes bio.blurb
 def generate_fallback_explanation(lawyer, bio, skills):
-    """Generate a detailed explanation for a lawyer when Claude API fails"""
+    """Generate a detailed explanation for a lawyer when Claude API fails - prioritizes bio.blurb"""
     # Extract key information
     name = lawyer['name']
+    blurb = bio.get('blurb', '')
     practice_areas = bio.get('practice_areas', 'relevant legal fields')
-    industry_exp = bio.get('industry_experience', 'relevant industries')
+    industry_exp = bio.get('industry_experience', '')
     previous_exp = bio.get('previous_in_house', '')
     previous_firms = bio.get('previous_firms', '')
-    education = bio.get('education', 'legal education')
+    education = bio.get('education', '')
     expertise = bio.get('expert', '')
     
     # Create detailed explanation based on available information
     explanation_parts = []
     
-    # Add practice area match
-    explanation_parts.append(f"{name} specializes in {practice_areas}, which directly aligns with the client's requirements.")
+    # START with bio.blurb if available (HIGHEST PRIORITY)
+    if blurb:
+        explanation_parts.append(f"Based on {name}'s biographical profile, {blurb[:200]}{'...' if len(blurb) > 200 else ''}")
+    else:
+        explanation_parts.append(f"{name}'s profile shows specialization in {practice_areas}, which directly aligns with the client's requirements.")
     
-    # Add industry experience if available
+    # Add specific biographical details
     if industry_exp:
         explanation_parts.append(f"Their industry experience in {industry_exp} provides valuable sector-specific knowledge for this matter.")
     
@@ -817,19 +944,20 @@ def generate_fallback_explanation(lawyer, bio, skills):
     if education:
         explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this type of matter.")
     
-    # Add skills as supporting evidence
-    if skills:
-        skill_names = ", ".join([s["skill"] for s in skills[:3]])
-        explanation_parts.append(f"Their self-reported expertise in {skill_names} further confirms their qualifications in the areas needed for this client.")
-    
     # Add expertise if available
     if expertise:
         explanation_parts.append(f"Their specific expertise in {expertise} is directly relevant to addressing the client's needs effectively.")
     
+    # Add skills as supporting evidence (LOWEST PRIORITY)
+    if skills:
+        skill_names = ", ".join([s["skill"] for s in skills[:3]])
+        total_score = sum([s["value"] for s in skills[:3]])
+        explanation_parts.append(f"This biographical match is further supported by their self-reported expertise scores in {skill_names} (total relevance score: {total_score:.1f}), confirming their qualifications in the areas needed for this client.")
+    
     # Combine parts into a complete paragraph
     return " ".join(explanation_parts)
 
-# Function to call Claude API using requests instead of anthropic client
+# Keep the same Claude API function but update the fallback call
 def call_claude_api(prompt):
     # Try to get API key from environment variables or secrets
     api_key = os.environ.get("ANTHROPIC_API_KEY", None)
@@ -847,7 +975,7 @@ def call_claude_api(prompt):
     
     # Handle the case where no API key is provided
     if not api_key:
-        st.warning("API key not found. Using mock reasoning data instead.")
+        st.warning("API key not found. Using mock reasoning data with bio.blurb priority instead.")
         # Return detailed mock reasoning data for the lawyers
         try:
             return call_claude_api_fallback(matches)
@@ -873,9 +1001,9 @@ def call_claude_api(prompt):
         # Request payload - using Claude 3.5 Sonnet
         payload = {
             "model": "claude-3-5-sonnet-20240620",
-            "max_tokens": 1000,
+            "max_tokens": 1500,  # Increased for longer bio-focused explanations
             "temperature": 0.2,
-            "system": "You are a legal resource coordinator that analyzes lawyer expertise matches. You provide detailed, factual explanations about why specific lawyers match particular client legal needs based on their biographical information and self-reported skills. Be specific and thorough in your analysis, highlighting the exact qualifications that make each lawyer a good match. Focus primarily on biographical data (practice areas, experience, education) and use self-reported skills as supporting evidence.",
+            "system": "You are a legal resource coordinator that analyzes lawyer expertise matches. You PRIORITIZE biographical information (especially bio.blurb) over skill scores. You provide detailed, factual explanations about why specific lawyers match particular client legal needs based primarily on their biographical background, using self-reported skills only as supporting evidence. Focus on bio.blurb content first, then other biographical data, and reference skill scores last as validation.",
             "messages": [
                 {"role": "user", "content": prompt}
             ]
@@ -967,7 +1095,7 @@ def call_claude_api(prompt):
                 st.warning(f"Manual JSON parsing error: {str(e)}")
             
             # If all parsing approaches fail, fall back to our manual generation
-            st.warning("Could not parse the JSON response from Claude. Using fallback explanations.")
+            st.warning("Could not parse the JSON response from Claude. Using bio-prioritized fallback explanations.")
             return call_claude_api_fallback(matches)
         else:
             st.error(f"API call failed with status code {response.status_code}")
@@ -986,7 +1114,7 @@ def call_claude_api(prompt):
         # Return using the fallback function
         return call_claude_api_fallback(matches)
 
-# Fallback function for generating mock lawyer reasoning
+# MODIFIED: Fallback function for generating mock lawyer reasoning with bio priority
 def call_claude_api_fallback(matches):
     try:
         lawyer_explanations = {}
@@ -996,14 +1124,14 @@ def call_claude_api_fallback(matches):
             bio = lawyer.get('bio', {})
             skills = match.get('matched_skills', [])
             
-            # Generate explanation using the helper function
+            # Generate explanation using the helper function that prioritizes bio.blurb
             lawyer_explanations[lawyer['name']] = generate_fallback_explanation(lawyer, bio, skills)
         
         return lawyer_explanations
     except Exception as e:
-        return {"error": f"Could not generate fallback explanations: {str(e)}"}
+        return {"error": f"Could not generate bio-prioritized fallback explanations: {str(e)}"}
 
-# Enhanced feedback function with more detailed feedback options
+# Keep all the feedback and admin functions the same...
 def add_realtime_feedback():
     st.markdown("---")
     st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
@@ -1215,7 +1343,7 @@ add_admin_mode()
 
 # Main app layout
 st.title("⚖️ Legal Expert Finder")
-st.markdown("Match client legal needs with the right lawyer based on expertise")
+st.markdown("Match client legal needs with the right lawyer based on **biographical information** (prioritizing bio.blurb)")
 
 # Check if admin dashboard should be shown
 if st.session_state.get('show_admin_dashboard', False) and st.session_state.get('admin_mode', False):
@@ -1271,7 +1399,7 @@ else:
 
     # Display results when search is pressed
     if st.session_state['search_pressed'] and st.session_state['query']:
-        with st.spinner("Matching client needs with our legal experts..."):
+        with st.spinner("Matching client needs with our legal experts (prioritizing biographical information)..."):
             # Get matches
             matches = match_lawyers(data, st.session_state['query'])
             
@@ -1300,15 +1428,16 @@ else:
                 
                 # Display results
                 st.markdown("## Matching Legal Experts")
-                st.markdown(f"Found {len(matches)} lawyers matching client needs:")
+                st.markdown(f"Found {len(matches)} lawyers matching client needs (ranked by biographical relevance):")
                 
-                # Sort alphabetically for display (not by score)
-                sorted_matches = sorted(matches, key=lambda x: x['lawyer']['name'])
+                # Sort by bio/blurb score first, then total score (prioritizing biographical matches)
+                sorted_matches = sorted(matches, key=lambda x: (x.get('blurb_score', 0) + x.get('bio_score', 0), x['score']), reverse=True)
                 
                 for match in sorted_matches:
                     lawyer = match['lawyer']
                     matched_skills = match['matched_skills']
                     matched_bio_reasons = match.get('matched_bio_reasons', [])
+                    matched_blurb_reasons = match.get('matched_blurb_reasons', [])
                     
                     with st.container():
                         # Get bio data
@@ -1323,6 +1452,15 @@ else:
                             <div class="lawyer-email">{lawyer['email']}</div>
                             <div class="practice-area">Practice Area: {lawyer['practice_area']}</div>
                         """
+                        
+                        # PRIORITY: Show bio.blurb first if available
+                        if bio.get('blurb'):
+                            html_output += f'''
+                            <div class="bio-blurb">
+                                <strong>🎯 Bio Profile:</strong><br/>
+                                {bio['blurb'][:500]}{'...' if len(bio['blurb']) > 500 else ''}
+                            </div>
+                            '''
                         
                         # Create biographical info section
                         bio_html = ""
@@ -1354,21 +1492,44 @@ else:
                         # Add the bio section to the HTML output
                         html_output += bio_html
                         
+                        # Add matched blurb reasons section (highest priority)
+                        if matched_blurb_reasons:
+                            html_output += '<div style="margin-top: 10px;"><strong>🎯 Bio.Blurb Matches:</strong><br/>'
+                            for reason in matched_blurb_reasons:
+                                match_type = reason.get('match_type', 'general')
+                                html_output += f'<span class="bio-match-tag">Bio.Blurb ({match_type})</span> '
+                            html_output += '</div>'
+                        
                         # Add matched bio reasons section
                         if matched_bio_reasons:
                             html_output += '<div style="margin-top: 10px;"><strong>Matched Biographical Factors:</strong><br/>'
                             for reason in matched_bio_reasons:
                                 field_name = reason['field'].replace('_', ' ').title()
-                                html_output += f'<span class="bio-match-tag">{field_name}</span> '
+                                match_type = reason.get('match_type', 'general')
+                                html_output += f'<span class="bio-match-tag">{field_name} ({match_type})</span> '
                             html_output += '</div>'
                         
-                        # Add skill tags
+                        # Add match scores for transparency
+                        blurb_score = match.get('blurb_score', 0)
+                        bio_score = match.get('bio_score', 0)
+                        skill_score = match.get('skill_score', 0)
+                        total_score = match.get('score', 0)
+                        
                         html_output += f"""
                             <div style="margin-top: 10px;">
-                                <strong>Relevant Expertise:</strong><br/>
-                                {"".join([f'<span class="skill-tag">{skill["skill"]}: {skill["value"]}</span>' for skill in matched_skills])}
+                                <strong>Match Scores:</strong>
+                                Bio.Blurb: {blurb_score} | Bio: {bio_score} | Skills: {skill_score} | Total: {total_score}
                             </div>
                         """
+                        
+                        # Add skill tags as supporting evidence
+                        if matched_skills:
+                            html_output += f"""
+                                <div style="margin-top: 10px;">
+                                    <strong>Supporting Skill Evidence:</strong><br/>
+                                    {"".join([f'<span class="skill-tag">{skill["skill"]}: {skill["value"]} ({skill.get("match_type", "general")})</span>' for skill in matched_skills])}
+                                </div>
+                            """
                         
                         html_output += "</div>"
                         st.markdown(html_output, unsafe_allow_html=True)
@@ -1394,13 +1555,13 @@ else:
                             
                             # If still not found, use the fallback
                             if lawyer_reasoning == "No specific analysis available for this lawyer.":
-                                # Generate a fallback explanation for this specific lawyer
+                                # Generate a bio-prioritized fallback explanation for this specific lawyer
                                 lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
                         else:
-                            # If reasoning is not a dictionary, generate a fallback explanation
+                            # If reasoning is not a dictionary, generate a bio-prioritized fallback explanation
                             lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
                         
-                        # Just add the reasoning section directly below the card
+                        # Add the reasoning section with emphasis on bio priority
                         st.markdown("### WHY THIS LAWYER IS AN EXCELLENT MATCH:")
                         st.markdown(f"_{lawyer_reasoning}_", unsafe_allow_html=False)
                 
@@ -1421,6 +1582,13 @@ else:
         st.markdown("## Explore Available Legal Expertise")
         
         if data:
+            # Show information about data loading and bio.blurb priority
+            st.info(f"✅ Loaded {len(data['lawyers'])} lawyers from {data.get('loaded_file', 'CSV file')} with biographical information prioritized over skill scores.")
+            
+            # Check how many lawyers have bio.blurb data
+            lawyers_with_blurb = sum(1 for lawyer in data['lawyers'] if lawyer.get('bio', {}).get('blurb'))
+            st.info(f"🎯 {lawyers_with_blurb} lawyers have detailed bio.blurb profiles (highest matching priority)")
+            
             # Create a visual breakdown of legal expertise
             all_skills = {}
             for lawyer in data['lawyers']:
@@ -1434,7 +1602,7 @@ else:
             top_skills = sorted(all_skills.items(), key=lambda x: x[1], reverse=True)[:20]
             
             # Show bar chart of top skills in scrollable container
-            st.markdown("### Most Common Legal Expertise Areas")
+            st.markdown("### Most Common Legal Expertise Areas (Supporting Evidence)")
             st.markdown('<div class="scroll-container">', unsafe_allow_html=True)
             chart_data = pd.DataFrame({
                 'Skill': [s[0] for s in top_skills],
@@ -1446,6 +1614,12 @@ else:
             st.markdown("### Instructions for Matching")
             st.markdown("""
             Enter your client's specific legal needs above or select a common query to find matching legal experts. 
+            
+            **🎯 NEW: Bio.Blurb Priority Matching**
+            - Matches are now **prioritized by biographical information**, especially bio.blurb content
+            - Skill scores are used as **supporting evidence only**
+            - Results show bio.blurb content prominently when available
+            
             Be as specific as possible about their requirements, including:
             
             - The type of legal expertise needed
@@ -1455,14 +1629,16 @@ else:
             - Timeframe and urgency
             
             For multi-criteria searches, use "AND" or "&" between criteria (e.g., "commercial contracts AND hospitality").
-            The system will match the query with lawyers who have relevant biographical information and self-reported expertise in those areas.
+            The system will match the query primarily with lawyers' biographical profiles and experience, using self-reported expertise as validation.
             """)
 
     # Footer
     st.markdown("---")
     st.markdown(
-        "This internal tool uses biographical information and self-reported expertise from lawyers in the database. "
-        "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
-        f"Currently loaded: {len(data['lawyers']) if data else 0} lawyers with {len(data['unique_skills']) if data else 0} unique skills. "
+        "This internal tool **prioritizes biographical information (especially bio.blurb)** over skill scores when matching lawyers. "
+        f"Results are sorted by biographical relevance with skill scores as supporting evidence. "
+        f"Currently loaded: {len(data['lawyers']) if data else 0} lawyers "
+        f"({sum(1 for lawyer in data['lawyers'] if lawyer.get('bio', {}).get('blurb')) if data else 0} with detailed bio.blurb profiles) "
+        f"with {len(data['unique_skills']) if data else 0} unique skills. "
         "Last updated: July 8, 2025"
     )
