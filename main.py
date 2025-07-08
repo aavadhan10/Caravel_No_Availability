@@ -359,6 +359,7 @@ def detect_csv_structure(df):
 def extract_lawyer_info_flexible(row, structure):
     """
     Extract lawyer information from a row based on detected structure
+    ENHANCED to capture more biographical data
     """
     # Extract name - try multiple strategies
     name = ""
@@ -401,76 +402,21 @@ def extract_lawyer_info_flexible(row, structure):
                     # Clean up column name for skill
                     skill_name = col.replace('(Skill', '').replace(')', '').strip()
                     # Remove numbers from skill names
-                    skill_name = re.sub(r'\s+\d+\s*$', '', skill_name).strip()
-                    skills[skill_name] = value
-            except (ValueError, TypeError):
-                # If it's text, still include it with a default value
-                if str(value).strip():
-                    skill_name = col.strip()
-                    skills[skill_name] = 1.0
-    
-    # Extract biographical information
-    bio = {}
-    bio_field_mapping = {
-        'level': ['level', 'title', 'position', 'rank'],
-        'call': ['call', 'bar', 'admission'],
-        'jurisdiction': ['jurisdiction', 'province', 'state'],
-        'location': ['location', 'office', 'city'],
-        'practice_areas': ['practice', 'area', 'specialization', 'expertise'],
-        'industry_experience': ['industry', 'sector', 'business'],
-        'languages': ['language', 'linguistic'],
-        'previous_in_house': ['in-house', 'in house', 'corporate', 'company'],
-        'previous_firms': ['firm', 'previous', 'prior'],
-        'education': ['education', 'school', 'university', 'degree'],
-        'awards': ['award', 'recognition', 'honor'],
-        'notable_items': ['notable', 'personal', 'detail', 'note'],
-        'expert': ['expert', 'specialty', 'focus']
-    }
-    
-    # Initialize bio fields
-    for field in bio_field_mapping.keys():
-        bio[field] = ""
-    
-    # Map columns to bio fields
-    for col in structure['bio_columns'] + structure['text_columns']:
-        col_lower = col.lower()
-        value = str(row[col]) if pd.notna(row[col]) else ""
-        
-        if value.strip():
-            # Find the best matching bio field
-            best_match = None
-            for bio_field, patterns in bio_field_mapping.items():
-                if any(pattern in col_lower for pattern in patterns):
-                    if not bio[bio_field]:  # Only set if not already set
-                        bio[bio_field] = value
-                        best_match = bio_field
-                        break
-            
-            # If no specific match, add to notable_items or expert
-            if not best_match:
-                if not bio['notable_items']:
-                    bio['notable_items'] = value
-                elif not bio['expert']:
-                    bio['expert'] = value
-    
-    return {
-        'name': name,
-        'email': email,
-        'skills': skills,
-        'bio': bio
-    }
+                    skill_name = re.sub(r'\s+\d+\s*
 
-# MODIFIED: Main data loading function to handle any CSV structure
+# MODIFIED: Single CSV reading function that gets everything from one file
 @lru_cache(maxsize=1)
 def load_lawyer_data():
     try:
-        # Try to load the main CSV file - try multiple possible names
-        possible_files = ['combined_unique.csv', 'Caravel_New.csv', 'lawyers.csv', 'data.csv']
+        # Try to load from a single CSV file - try multiple possible names
+        possible_files = ['Caravel_New.csv', 'combined_unique.csv', 'lawyers.csv', 'data.csv']
         df = None
+        loaded_file = None
         
         for filename in possible_files:
             try:
                 df = pd.read_csv(filename)
+                loaded_file = filename
                 st.info(f"Successfully loaded data from {filename}")
                 break
             except FileNotFoundError:
@@ -485,22 +431,29 @@ def load_lawyer_data():
         
         # Debug information
         with st.expander("CSV Structure Analysis", expanded=False):
+            st.write(f"Loaded file: {loaded_file}")
             st.write("Detected Structure:")
             st.json(structure)
+            st.write("Column names in CSV:")
+            st.write(list(df.columns))
             st.write("Sample of first few rows:")
-            st.dataframe(df.head())
+            st.dataframe(df.head(3))
+            st.write("Sample of bio-related columns:")
+            for col in structure['bio_columns'][:5]:  # Show first 5 bio columns
+                st.write(f"{col}: {df[col].iloc[0] if not df[col].empty else 'Empty'}")
         
-        # Process the data
+        # Process the data - Extract ALL information from the single CSV
         lawyers = []
         practice_areas = ["Corporate", "Litigation", "IP", "Employment", "Privacy", "Finance", "Real Estate", "Tax"]
         rate_ranges = ["$400-500/hr", "$500-600/hr", "$600-700/hr", "$700-800/hr", "$800-900/hr"]
         
-        for _, row in df.iterrows():
+        for index, row in df.iterrows():
             try:
+                # Extract lawyer information from this single row
                 lawyer_info = extract_lawyer_info_flexible(row, structure)
                 
                 # Skip if no name found
-                if not lawyer_info['name']:
+                if not lawyer_info['name'] or lawyer_info['name'].strip() == "":
                     continue
                 
                 # Add mock data for fields that aren't in the CSV
@@ -522,10 +475,22 @@ def load_lawyer_data():
                     elif 'privacy' in practice_areas_text:
                         lawyer_info['practice_area'] = 'Privacy'
                 
+                # Debug specific lawyer
+                if 'james' in lawyer_info['name'].lower() and 'oborne' in lawyer_info['name'].lower():
+                    with st.expander(f"Debug: {lawyer_info['name']} Data Extraction", expanded=False):
+                        st.write("Extracted Bio Data:")
+                        st.json(lawyer_info['bio'])
+                        st.write("Extracted Skills:")
+                        st.json(lawyer_info['skills'])
+                        st.write("Raw row data for bio columns:")
+                        for col in structure['bio_columns']:
+                            if col in df.columns:
+                                st.write(f"{col}: {row[col]}")
+                
                 lawyers.append(lawyer_info)
                 
             except Exception as e:
-                st.warning(f"Error processing row: {e}")
+                st.warning(f"Error processing row {index}: {e}")
                 continue
         
         # Create unique skills list
@@ -536,11 +501,1135 @@ def load_lawyer_data():
         return {
             'lawyers': lawyers,
             'unique_skills': list(all_skills),
-            'structure': structure
+            'structure': structure,
+            'loaded_file': loaded_file
         }
         
     except Exception as e:
         st.error(f"Error loading data: {e}")
+        import traceback
+        st.error(f"Full error: {traceback.format_exc()}")
+        return None
+
+# Keep all the other functions exactly the same
+def match_lawyers(data, query, top_n=10):
+    if not data:
+        return []
+    
+    # Convert query to lowercase for case-insensitive matching
+    lower_query = query.lower()
+    
+    # Test users to exclude - preventing test accounts from appearing in results
+    excluded_users = ["Ankita", "Test", "Tania", "Antoine Malek", "Connie Chan", "Michelle Koyle", "Sue Gaudi", "Rose Os"]
+    
+    # For M&A queries, expand the search terms
+    if "m&a" in lower_query or "merger" in lower_query or "acquisition" in lower_query:
+        expanded_query = lower_query + " acquisitions mergers purchase sale of business"
+        lower_query = expanded_query
+    
+    # Check for multi-criteria queries (like "commercial contracts AND hospitality")
+    query_parts = []
+    if " and " in lower_query or " & " in lower_query:
+        # Split by " and " or " & "
+        query_parts = re.split(r' and | & ', lower_query)
+    else:
+        query_parts = [lower_query]
+    
+    # Calculate match scores for each lawyer
+    matches = []
+    for lawyer in data['lawyers']:
+        # Skip excluded users
+        if any(excluded_name in lawyer['name'] for excluded_name in excluded_users):
+            continue
+            
+        bio_score = 0
+        skill_score = 0
+        matched_bio_reasons = []
+        matched_skills = []
+        all_criteria_matched = True if len(query_parts) > 1 else False
+        
+        # FIRST: Check biographical data for matches
+        bio = lawyer.get('bio', {})
+        
+        # Create a single text string from all biographical data to search
+        bio_text = " ".join([
+            bio.get('practice_areas', ''),
+            bio.get('expert', ''),
+            bio.get('industry_experience', ''),
+            bio.get('notable_items', ''),
+            bio.get('previous_in_house', ''),
+            bio.get('previous_firms', '')
+        ]).lower()
+        
+        # Check each query part against biographical data
+        for query_part in query_parts:
+            part_matched_in_bio = False
+            
+            # Check for exact or partial matches in biographical data
+            if query_part.strip() in bio_text:
+                bio_score += 5  # High score for bio matches
+                
+                # Determine which bio field matched
+                for field, value in bio.items():
+                    if value and query_part.strip() in value.lower():
+                        matched_bio_reasons.append({
+                            'field': field,
+                            'value': value
+                        })
+                        part_matched_in_bio = True
+            
+            # For multi-criteria queries, track if each part matched in bio
+            if not part_matched_in_bio:
+                for word in query_part.split():
+                    if word in bio_text and len(word) > 3:  # Avoid matching small words
+                        bio_score += 2
+                        
+                        # Determine which bio field matched
+                        for field, value in bio.items():
+                            if value and word in value.lower():
+                                matched_bio_reasons.append({
+                                    'field': field,
+                                    'value': value
+                                })
+                                part_matched_in_bio = True
+                                break
+            
+            # SECOND: Check skills data as a cross-reference
+            part_matched_in_skills = False
+            
+            # Check each skill against the query part
+            for skill, value in lawyer['skills'].items():
+                skill_lower = skill.lower()
+                
+                # More precise matching - prefer exact matches over partial
+                if skill_lower == query_part.strip():
+                    # Exact match gets higher score
+                    skill_score += value * 1.5
+                    matched_skills.append({'skill': skill, 'value': value})
+                    part_matched_in_skills = True
+                elif query_part.strip() in skill_lower:
+                    # Contains match
+                    skill_score += value
+                    matched_skills.append({'skill': skill, 'value': value})
+                    part_matched_in_skills = True
+                elif any(word in skill_lower for word in query_part.split() if len(word) > 3):
+                    # Word match (for words > 3 chars to avoid matching small words)
+                    skill_score += value * 0.5
+                    matched_skills.append({'skill': skill, 'value': value})
+                    part_matched_in_skills = True
+            
+            # For multi-criteria queries, check if this part matched in either bio or skills
+            if len(query_parts) > 1 and not (part_matched_in_bio or part_matched_in_skills):
+                all_criteria_matched = False
+        
+        # For multi-criteria queries, if not all criteria matched, reset scores
+        if len(query_parts) > 1 and not all_criteria_matched:
+            bio_score = 0
+            skill_score = 0
+            matched_bio_reasons = []
+            matched_skills = []
+        
+        # Calculate final score with bio_score weighted higher
+        final_score = (bio_score * 2) + skill_score
+        
+        # Add lawyer to matches if scored
+        if final_score > 0:
+            # Remove duplicate skills and bio reasons
+            unique_skills = {}
+            for skill in matched_skills:
+                skill_name = skill['skill']
+                if skill_name not in unique_skills or skill['value'] > unique_skills[skill_name]['value']:
+                    unique_skills[skill_name] = skill
+            
+            unique_bio_reasons = {}
+            for reason in matched_bio_reasons:
+                field = reason['field']
+                if field not in unique_bio_reasons:
+                    unique_bio_reasons[field] = reason
+            
+            matches.append({
+                'lawyer': lawyer,
+                'score': final_score,
+                'bio_score': bio_score,
+                'skill_score': skill_score,
+                'matched_bio_reasons': list(unique_bio_reasons.values()),
+                'matched_skills': sorted(list(unique_skills.values()), key=lambda x: x['value'], reverse=True)[:5]
+            })
+    
+    # Sort by final score and take top N
+    return sorted(matches, key=lambda x: x['score'], reverse=True)[:top_n]
+
+# Updated function to format Claude's analysis prompt with BIOGRAPHICAL DATA as PRIMARY FOCUS
+def format_claude_prompt(query, matches):
+    prompt = f"""
+PRIORITY: Base your analysis PRIMARILY on biographical information, experience, and background. This biographical data is the most reliable and important information for matching lawyers to client needs.
+
+Client's Legal Need: "{query}"
+
+For each lawyer below, analyze why they would be an excellent match based PRIMARILY on their biographical information, professional background, and experience. Use skills data only as supporting evidence.
+
+"""
+    
+    for i, match in enumerate(matches, 1):
+        lawyer = match['lawyer']
+        skills = match.get('matched_skills', [])
+        bio_reasons = match.get('matched_bio_reasons', [])
+        bio = lawyer.get('bio', {})
+        
+        prompt += f"LAWYER {i}: {lawyer['name']}\n"
+        prompt += "=" * 50 + "\n"
+        
+        # BIOGRAPHICAL INFORMATION COMES FIRST AND IS MOST IMPORTANT
+        prompt += "** PRIMARY BIOGRAPHICAL INFORMATION (USE THIS AS MAIN BASIS FOR ANALYSIS) **\n"
+        
+        # Add all biographical information with clear emphasis
+        bio_sections = []
+        if bio.get('level'):
+            bio_sections.append(f"Level/Title: {bio['level']}")
+        if bio.get('call'):
+            bio_sections.append(f"Called to Bar: {bio['call']}")
+        if bio.get('jurisdiction'):
+            bio_sections.append(f"Jurisdiction: {bio['jurisdiction']}")
+        if bio.get('location'):
+            bio_sections.append(f"Location: {bio['location']}")
+        if bio.get('practice_areas'):
+            bio_sections.append(f"Practice Areas & Specializations: {bio['practice_areas']}")
+        if bio.get('industry_experience'):
+            bio_sections.append(f"Industry Experience: {bio['industry_experience']}")
+        if bio.get('previous_in_house'):
+            bio_sections.append(f"Previous In-House Experience: {bio['previous_in_house']}")
+        if bio.get('previous_firms'):
+            bio_sections.append(f"Previous Law Firms: {bio['previous_firms']}")
+        if bio.get('education'):
+            bio_sections.append(f"Education: {bio['education']}")
+        if bio.get('awards'):
+            bio_sections.append(f"Awards & Recognition: {bio['awards']}")
+        if bio.get('expert'):
+            bio_sections.append(f"Areas of Expertise: {bio['expert']}")
+        if bio.get('notable_items'):
+            bio_sections.append(f"Notable Experience & Background: {bio['notable_items']}")
+        
+        for section in bio_sections:
+            prompt += f"- {section}\n"
+        
+        # Highlight what specifically matched in the search
+        if bio_reasons:
+            prompt += "\n** SPECIFIC BIOGRAPHICAL FACTORS THAT MATCHED THE SEARCH **\n"
+            for reason in bio_reasons:
+                field_name = reason['field'].replace('_', ' ').title()
+                prompt += f"- {field_name}: {reason['value']}\n"
+        
+        prompt += "\n"
+            
+        # Add skills as SUPPORTING information only
+        if skills:
+            prompt += "** SUPPORTING SKILLS DATA (use only to supplement biographical analysis) **\n"
+            for skill in skills:
+                prompt += f"- {skill['skill']}: {skill['value']} points\n"
+        
+        prompt += "\n" + "=" * 50 + "\n\n"
+    
+    prompt += """
+INSTRUCTIONS FOR ANALYSIS:
+
+1. **PRIORITIZE BIOGRAPHICAL DATA**: Base your analysis primarily on the biographical information above. This includes practice areas, industry experience, previous firms, in-house experience, education, and expertise areas.
+
+2. **Focus on Real Experience**: Highlight specific practice areas, industry experience, previous roles, and educational background that directly relate to the client's needs.
+
+3. **Use Skills as Supporting Evidence Only**: Reference self-reported skills only to support and validate the biographical information, not as the primary basis for the match.
+
+4. **Be Specific and Detailed**: Mention specific companies, industries, practice areas, and experiences from their background that make them relevant.
+
+For each lawyer, write ONE comprehensive paragraph (5-7 sentences) explaining why they are an excellent match for this client's needs, focusing primarily on their biographical information and professional background.
+
+Format your response as a JSON object where each key is the lawyer's name and each value is your explanation paragraph:
+
+{
+    "Lawyer Name 1": "Detailed explanation paragraph focusing on biographical background...",
+    "Lawyer Name 2": "Detailed explanation paragraph focusing on biographical background...",
+    "Lawyer Name 3": "Detailed explanation paragraph focusing on biographical background..."
+}
+
+DO NOT include any additional text outside of this JSON structure.
+"""
+    return prompt
+
+# Add this function to generate a fallback explanation for a lawyer
+def generate_fallback_explanation(lawyer, bio, skills):
+    """Generate a detailed explanation for a lawyer when Claude API fails"""
+    # Extract key information
+    name = lawyer['name']
+    practice_areas = bio.get('practice_areas', 'relevant legal fields')
+    industry_exp = bio.get('industry_experience', 'relevant industries')
+    previous_exp = bio.get('previous_in_house', '')
+    previous_firms = bio.get('previous_firms', '')
+    education = bio.get('education', 'legal education')
+    expertise = bio.get('expert', '')
+    
+    # Create detailed explanation based on available information
+    explanation_parts = []
+    
+    # Add practice area match
+    explanation_parts.append(f"{name} specializes in {practice_areas}, which directly aligns with the client's requirements.")
+    
+    # Add industry experience if available
+    if industry_exp:
+        explanation_parts.append(f"Their industry experience in {industry_exp} provides valuable sector-specific knowledge for this matter.")
+    
+    # Add previous experience
+    if previous_exp or previous_firms:
+        exp_text = "Their professional background includes "
+        if previous_exp:
+            exp_text += f"in-house experience at {previous_exp}"
+            if previous_firms:
+                exp_text += f" and work at {previous_firms}"
+        else:
+            exp_text += f"work at {previous_firms}"
+        exp_text += ", giving them practical insights into similar legal challenges."
+        explanation_parts.append(exp_text)
+    
+    # Add education
+    if education:
+        explanation_parts.append(f"Their education from {education} provides a strong theoretical foundation for handling this type of matter.")
+    
+    # Add skills as supporting evidence
+    if skills:
+        skill_names = ", ".join([s["skill"] for s in skills[:3]])
+        explanation_parts.append(f"Their self-reported expertise in {skill_names} further confirms their qualifications in the areas needed for this client.")
+    
+    # Add expertise if available
+    if expertise:
+        explanation_parts.append(f"Their specific expertise in {expertise} is directly relevant to addressing the client's needs effectively.")
+    
+    # Combine parts into a complete paragraph
+    return " ".join(explanation_parts)
+
+# Function to call Claude API using requests instead of anthropic client
+def call_claude_api(prompt):
+    # Try to get API key from environment variables or secrets
+    api_key = os.environ.get("ANTHROPIC_API_KEY", None)
+    
+    # Try secrets if available (this should work with your secrets.toml configuration)
+    try:
+        if 'anthropic' in st.secrets and 'api_key' in st.secrets["anthropic"]:
+            api_key = st.secrets["anthropic"]["api_key"]
+            st.session_state['api_key_found'] = True
+        else:
+            st.session_state['api_key_found'] = False
+    except Exception as e:
+        st.session_state['api_key_found'] = False
+        st.session_state['api_key_error'] = str(e)
+    
+    # Handle the case where no API key is provided
+    if not api_key:
+        st.warning("API key not found. Using mock reasoning data instead.")
+        # Return detailed mock reasoning data for the lawyers
+        try:
+            return call_claude_api_fallback(matches)
+        except Exception as e:
+            st.error(f"Error generating mock data: {str(e)}")
+            return {"error": f"No API key provided and could not generate mock data: {str(e)}"}
+    
+    try:
+        # Import just what we need to make an HTTP request
+        import requests
+        import json
+        
+        # Claude API endpoint
+        url = "https://api.anthropic.com/v1/messages"
+        
+        # Headers
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+        
+        # Request payload - using Claude 3.5 Sonnet
+        payload = {
+            "model": "claude-3-5-sonnet-20240620",
+            "max_tokens": 1000,
+            "temperature": 0.2,
+            "system": "You are a legal resource coordinator that analyzes lawyer expertise matches. You provide detailed, factual explanations about why specific lawyers match particular client legal needs based on their biographical information and self-reported skills. Be specific and thorough in your analysis, highlighting the exact qualifications that make each lawyer a good match. Focus primarily on biographical data (practice areas, experience, education) and use self-reported skills as supporting evidence.",
+            "messages": [
+                {"role": "user", "content": prompt}
+            ]
+        }
+        
+        # Make the request
+        response = requests.post(url, headers=headers, json=payload)
+        
+        # Log API response status and truncated content for debugging
+        st.session_state['api_status'] = response.status_code
+        st.session_state['api_response_preview'] = response.text[:100] + "..." if len(response.text) > 100 else response.text
+        
+        # Check for successful response
+        if response.status_code == 200:
+            response_json = response.json()
+            response_text = response_json.get("content", [{}])[0].get("text", "")
+            
+            # Save the full response text for debugging
+            st.session_state['full_claude_response'] = response_text
+            
+            # Try several approaches to parse the JSON
+            # Approach 1: Find JSON within the response using regex
+            import re
+            json_match = re.search(r'(\{[\s\S]*\})', response_text, re.DOTALL)
+            
+            if json_match:
+                try:
+                    # Clean up the JSON string
+                    json_str = json_match.group(0).strip()
+                    # Attempt to parse the JSON
+                    parsed_json = json.loads(json_str)
+                    return parsed_json
+                except json.JSONDecodeError as e:
+                    st.warning(f"JSON parsing error (Approach 1): {str(e)}")
+            
+            # Approach 2: Try to find JSON blocks using another pattern
+            json_match2 = re.search(r'({[\s\S]*})', response_text, re.DOTALL)
+            if json_match2:
+                try:
+                    json_str = json_match2.group(0).strip()
+                    # Try to fix common JSON issues (single quotes to double quotes)
+                    json_str = json_str.replace("'", '"')
+                    parsed_json = json.loads(json_str)
+                    return parsed_json
+                except json.JSONDecodeError as e:
+                    st.warning(f"JSON parsing error (Approach 2): {str(e)}")
+            
+            # Approach 3: Try to manually construct a JSON from the response
+            try:
+                lines = response_text.split('\n')
+                lawyer_explanations = {}
+                
+                current_lawyer = None
+                current_explanation = []
+                
+                for line in lines:
+                    # Look for patterns like "Lawyer Name": or "Lawyer Name":
+                    match = re.search(r'"([^"]+)"\s*:', line) or re.search(r'"([^"]+)":', line)
+                    if match and ':' in line:
+                        # If we already have a lawyer, save their explanation
+                        if current_lawyer and current_explanation:
+                            lawyer_explanations[current_lawyer] = ' '.join(current_explanation)
+                        
+                        # Start a new lawyer
+                        current_lawyer = match.group(1)
+                        
+                        # Extract the explanation part after the colon
+                        explanation_part = line.split(':', 1)[1].strip()
+                        if explanation_part.startswith('"') and explanation_part.endswith('"'):
+                            explanation_part = explanation_part[1:-1]  # Remove quotes
+                        
+                        current_explanation = [explanation_part] if explanation_part else []
+                    elif current_lawyer and line.strip():
+                        # Continue the current explanation
+                        line = line.strip()
+                        if line.startswith('"') and line.endswith('"'):
+                            line = line[1:-1]  # Remove quotes
+                        if line.endswith(','):
+                            line = line[:-1]  # Remove trailing comma
+                        current_explanation.append(line)
+                
+                # Don't forget to add the last lawyer
+                if current_lawyer and current_explanation:
+                    lawyer_explanations[current_lawyer] = ' '.join(current_explanation)
+                
+                if lawyer_explanations:
+                    return lawyer_explanations
+            except Exception as e:
+                st.warning(f"Manual JSON parsing error: {str(e)}")
+            
+            # If all parsing approaches fail, fall back to our manual generation
+            st.warning("Could not parse the JSON response from Claude. Using fallback explanations.")
+            return call_claude_api_fallback(matches)
+        else:
+            st.error(f"API call failed with status code {response.status_code}")
+            st.code(response.text)  # Show the error response for debugging
+            
+            # Fall back to the mock data
+            return call_claude_api_fallback(matches)
+            
+    except Exception as e:
+        st.error(f"Error calling Claude API: {str(e)}")
+        
+        # Provide a more detailed error message to help debugging
+        import traceback
+        st.error(f"Error details: {traceback.format_exc()}")
+        
+        # Return using the fallback function
+        return call_claude_api_fallback(matches)
+
+# Fallback function for generating mock lawyer reasoning
+def call_claude_api_fallback(matches):
+    try:
+        lawyer_explanations = {}
+        
+        for match in matches:
+            lawyer = match['lawyer']
+            bio = lawyer.get('bio', {})
+            skills = match.get('matched_skills', [])
+            
+            # Generate explanation using the helper function
+            lawyer_explanations[lawyer['name']] = generate_fallback_explanation(lawyer, bio, skills)
+        
+        return lawyer_explanations
+    except Exception as e:
+        return {"error": f"Could not generate fallback explanations: {str(e)}"}
+
+# Enhanced feedback function with more detailed feedback options
+def add_realtime_feedback():
+    st.markdown("---")
+    st.markdown('<div class="feedback-container">', unsafe_allow_html=True)
+    st.markdown('<div class="feedback-title">Provide Feedback on Search Results</div>', unsafe_allow_html=True)
+    
+    # Use a callback to update feedback in real-time
+    def on_feedback_change():
+        # Only save to Supabase if feedback actually changed and is not empty
+        if st.session_state.feedback_text and st.session_state.feedback_text != st.session_state.last_saved_feedback:
+            # Create feedback data object
+            feedback_data = {
+                "query": st.session_state.get('query', ''),
+                "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "feedback": st.session_state.feedback_text,
+                "user_email": st.session_state.get('user_email', 'anonymous'),
+                "user_role": st.session_state.get('user_role', 'partner'),
+                "lawyer_results": json.dumps([m['lawyer']['name'] for m in matches]) if 'matches' in globals() else "[]",
+                # Add expected lawyers that should have appeared
+                "expected_lawyers": st.session_state.get('expected_lawyers', ''),
+                # Add rating of results
+                "rating": st.session_state.get('rating', ''),
+                # Add incorrect lawyers field
+                "incorrect_lawyers": st.session_state.get('incorrect_lawyers', '')
+            }
+            
+            # Save to Supabase
+            result = save_feedback_to_supabase(feedback_data)
+            
+            if result['success']:
+                st.session_state.feedback_saved = True
+                st.session_state.last_saved_feedback = st.session_state.feedback_text
+                st.session_state.last_feedback_id = result.get('id')
+            else:
+                st.session_state.feedback_saved = False
+                st.session_state.feedback_error = result.get('message')
+    
+    # Add rating selector
+    st.markdown("<strong>How would you rate these search results?</strong>", unsafe_allow_html=True)
+    cols = st.columns(5)
+    rating_options = ["Poor", "Fair", "Good", "Very Good", "Excellent"]
+    
+    # Set up radio buttons for rating
+    rating = st.radio(
+        "Rating",
+        rating_options,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="rating_input"
+    )
+    
+    # Store rating in session state
+    st.session_state.rating = rating
+    
+    # Optional email field for feedback attribution
+    user_email = st.text_input(
+        "Your email (optional):",
+        value=st.session_state.get('user_email', ''),
+        key="user_email_input",
+        placeholder="Enter your email to associate with feedback"
+    )
+    
+    # Store email in session state
+    st.session_state.user_email = user_email
+    
+    # User role selection
+    user_role = st.selectbox(
+        "Your role:",
+        ["Partner", "Associate", "Executive Assistant", "Legal Operations", "Other"],
+        index=0,
+        key="user_role_input"
+    )
+    
+    # Store user role in session state
+    st.session_state.user_role = user_role
+    
+    # Field to indicate expected lawyers that should have appeared
+    expected_lawyers = st.text_input(
+        "Lawyers you expected to see in results (comma-separated):",
+        value=st.session_state.get('expected_lawyers', ''),
+        key="expected_lawyers_input",
+        placeholder="Names of lawyers you expected to see in these search results"
+    )
+    
+    # Store expected lawyers in session state
+    st.session_state.expected_lawyers = expected_lawyers
+    
+    # Field to indicate incorrect lawyers that shouldn't have appeared
+    incorrect_lawyers = st.text_input(
+        "Lawyers that shouldn't have appeared in results (comma-separated):",
+        value=st.session_state.get('incorrect_lawyers', ''),
+        key="incorrect_lawyers_input",
+        placeholder="Names of lawyers you feel were incorrectly included in these results"
+    )
+    
+    # Store incorrect lawyers in session state
+    st.session_state.incorrect_lawyers = incorrect_lawyers
+    
+    # Create a text area that calls the callback when changed
+    feedback = st.text_area(
+        "Additional feedback on search results:",
+        value=st.session_state.feedback_text,
+        key="feedback_input",
+        on_change=on_feedback_change,
+        height=100,
+        placeholder="Please share your thoughts on why these results are helpful or what could be improved..."
+    )
+    
+    # Update the feedback text in session state
+    st.session_state.feedback_text = feedback
+    
+    # If there's feedback, show it's being saved in real-time
+    if feedback:
+        # If feedback saved successfully
+        if st.session_state.get('feedback_saved', False):
+            # Display a success message
+            st.success("✓ Feedback saved. Thank you for helping us improve the matching system!")
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Admin dashboard for viewing feedback
+def show_admin_dashboard():
+    st.markdown("## Feedback Dashboard")
+    
+    # Get feedback data
+    feedback_data = get_feedback_from_supabase(limit=50)
+    
+    if not feedback_data:
+        st.info("No feedback data available.")
+        return
+    
+    # Display feedback in a table
+    st.markdown("### Recent Feedback")
+    
+    # Convert to DataFrame for easier display
+    if isinstance(feedback_data, list) and feedback_data:
+        df = pd.DataFrame(feedback_data)
+        
+        # Format timestamp
+        if 'timestamp' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Display the DataFrame
+        st.dataframe(df)
+        
+        # Allow downloading as CSV
+        csv = df.to_csv(index=False)
+        st.download_button(
+            label="Download Feedback as CSV",
+            data=csv,
+            file_name="feedback_data.csv",
+            mime="text/csv"
+        )
+        
+        # Analyze feedback to identify common patterns
+        st.markdown("### Feedback Analysis")
+        
+        # Most common expected lawyers
+        if 'expected_lawyers' in df.columns:
+            all_expected = []
+            for exp in df['expected_lawyers'].dropna():
+                names = [name.strip() for name in exp.split(',') if name.strip()]
+                all_expected.extend(names)
+            
+            if all_expected:
+                expected_counts = pd.Series(all_expected).value_counts().head(10)
+                st.markdown("#### Top Missing Lawyers")
+                st.bar_chart(expected_counts)
+        
+        # Most common incorrect lawyers
+        if 'incorrect_lawyers' in df.columns:
+            all_incorrect = []
+            for inc in df['incorrect_lawyers'].dropna():
+                names = [name.strip() for name in inc.split(',') if name.strip()]
+                all_incorrect.extend(names)
+            
+            if all_incorrect:
+                incorrect_counts = pd.Series(all_incorrect).value_counts().head(10)
+                st.markdown("#### Top Incorrectly Matched Lawyers")
+                st.bar_chart(incorrect_counts)
+        
+        # Rating distribution
+        if 'rating' in df.columns:
+            rating_counts = df['rating'].value_counts()
+            st.markdown("#### Rating Distribution")
+            st.bar_chart(rating_counts)
+    else:
+        st.warning("Feedback data format is not as expected.")
+
+# Updated admin mode function
+def add_admin_mode():
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Admin Options")
+    
+    # Admin login
+    admin_password = st.sidebar.text_input("Admin Password", type="password")
+    
+    if is_admin_password_valid(admin_password):
+        st.session_state.admin_mode = True
+        st.sidebar.success("Admin mode activated")
+        
+        # Admin actions
+        if st.sidebar.button("View Feedback Dashboard"):
+            st.session_state.show_admin_dashboard = True
+    else:
+        st.session_state.admin_mode = False
+
+# Add admin mode to sidebar
+add_admin_mode()
+
+# Main app layout
+st.title("⚖️ Legal Expert Finder")
+st.markdown("Match client legal needs with the right lawyer based on expertise")
+
+# Check if admin dashboard should be shown
+if st.session_state.get('show_admin_dashboard', False) and st.session_state.get('admin_mode', False):
+    show_admin_dashboard()
+    # Add button to return to main app
+    if st.button("Return to Main App"):
+        st.session_state.show_admin_dashboard = False
+        st.experimental_rerun()
+else:
+    # Load data
+    data = load_lawyer_data()
+
+    # Updated preset queries - changed "M&A without tech companies" to just "M&A"
+    preset_queries = [
+        "M&A",  # Simplified from "M&A not technology" to just "M&A"
+        "Privacy compliance",
+        "Startup law",
+        "Employment issues",
+        "Intellectual property protection",
+        "Employment termination reviews",
+        "Incorporation and corporate record keeping",
+        "Healthcare compliance regulations",
+        "Fintech regulatory compliance",
+        "Commercial contracts & hospitality"  # Added this multi-criteria query based on feedback
+    ]
+
+    # Query input section
+    query = st.text_area(
+        "Describe client's legal needs in detail:", 
+        value=st.session_state['query'],
+        height=100,
+        placeholder="Example: Client needs a lawyer with blockchain governance experience for cross-border cryptocurrency transactions or 'commercial contracts AND hospitality' for multiple criteria",
+        key="query_input"
+    )
+
+    # Preset query buttons in rows of 3
+    st.markdown("### Common Client Needs")
+    cols = st.columns(3)
+    for i, preset_query in enumerate(preset_queries):
+        col_idx = i % 3
+        with cols[col_idx]:
+            if st.button(preset_query, key=f"preset_{i}"):
+                set_query(preset_query)
+
+    # Update query in session state from text area
+    if query:
+        st.session_state['query'] = query
+
+    # Search button
+    search_pressed = st.button("🔍 Find Matching Lawyers", type="primary", use_container_width=True)
+    if search_pressed:
+        st.session_state['search_pressed'] = True
+
+    # Display results when search is pressed
+    if st.session_state['search_pressed'] and st.session_state['query']:
+        with st.spinner("Matching client needs with our legal experts..."):
+            # Get matches
+            matches = match_lawyers(data, st.session_state['query'])
+            
+            if not matches:
+                st.warning("No matching lawyers found. Please try a different query.")
+            else:
+                # Call Claude API for reasoning
+                claude_prompt = format_claude_prompt(st.session_state['query'], matches)
+                reasoning = call_claude_api(claude_prompt)
+                
+                # Add debugging information in expandable section
+                with st.expander("Debug Information", expanded=False):
+                    st.write("API Key Found:", st.session_state.get('api_key_found', 'Not checked'))
+                    if 'api_key_error' in st.session_state:
+                        st.write("API Key Error:", st.session_state['api_key_error'])
+                    if 'api_status' in st.session_state:
+                        st.write("API Status Code:", st.session_state['api_status'])
+                    if 'api_response_preview' in st.session_state:
+                        st.write("API Response Preview:", st.session_state['api_response_preview'])
+                    st.write("Reasoning Type:", type(reasoning))
+                    if isinstance(reasoning, dict):
+                        st.write("Reasoning Keys:", list(reasoning.keys()))
+                    if 'full_claude_response' in st.session_state:
+                        st.write("Full Claude Response:")
+                        st.code(st.session_state['full_claude_response'])
+                
+                # Display results
+                st.markdown("## Matching Legal Experts")
+                st.markdown(f"Found {len(matches)} lawyers matching client needs:")
+                
+                # Sort alphabetically for display (not by score)
+                sorted_matches = sorted(matches, key=lambda x: x['lawyer']['name'])
+                
+                for match in sorted_matches:
+                    lawyer = match['lawyer']
+                    matched_skills = match['matched_skills']
+                    matched_bio_reasons = match.get('matched_bio_reasons', [])
+                    
+                    with st.container():
+                        # Get bio data
+                        bio = lawyer.get('bio', {})
+                        
+                        # Use raw HTML string concatenation to avoid Streamlit escaping issues
+                        html_output = f"""
+                        <div class="lawyer-card">
+                            <div class="lawyer-name">
+                                {lawyer['name']}
+                            </div>
+                            <div class="lawyer-email">{lawyer['email']}</div>
+                            <div class="practice-area">Practice Area: {lawyer['practice_area']}</div>
+                        """
+                        
+                        # Create biographical info section
+                        bio_html = ""
+                        if bio:
+                            bio_html += '<div class="bio-section">'
+                            if bio.get('level'):
+                                bio_html += f'<div class="bio-level">{bio["level"]}</div>'
+                            
+                            bio_details = []
+                            if bio.get('call'):
+                                bio_details.append(f'Called to Bar: {bio["call"]}')
+                            if bio.get('jurisdiction'):
+                                bio_details.append(f'Jurisdiction: {bio["jurisdiction"]}')
+                            if bio.get('location'):
+                                bio_details.append(f'Location: {bio["location"]}')
+                            
+                            if bio_details:
+                                bio_html += f'<div class="bio-details">{" | ".join(bio_details)}</div>'
+                                
+                            if bio.get('previous_in_house'):
+                                bio_html += f'<div class="bio-experience"><strong>In-House Experience:</strong> {bio["previous_in_house"]}</div>'
+                            if bio.get('previous_firms'):
+                                bio_html += f'<div class="bio-experience"><strong>Previous Firms:</strong> {bio["previous_firms"]}</div>'
+                            if bio.get('education'):
+                                bio_html += f'<div class="bio-education"><strong>Education:</strong> {bio["education"]}</div>'
+                                
+                            bio_html += '</div>'
+                        
+                        # Add the bio section to the HTML output
+                        html_output += bio_html
+                        
+                        # Add matched bio reasons section
+                        if matched_bio_reasons:
+                            html_output += '<div style="margin-top: 10px;"><strong>Matched Biographical Factors:</strong><br/>'
+                            for reason in matched_bio_reasons:
+                                field_name = reason['field'].replace('_', ' ').title()
+                                html_output += f'<span class="bio-match-tag">{field_name}</span> '
+                            html_output += '</div>'
+                        
+                        # Add skill tags
+                        html_output += f"""
+                            <div style="margin-top: 10px;">
+                                <strong>Relevant Expertise:</strong><br/>
+                                {"".join([f'<span class="skill-tag">{skill["skill"]}: {skill["value"]}</span>' for skill in matched_skills])}
+                            </div>
+                        """
+                        
+                        html_output += "</div>"
+                        st.markdown(html_output, unsafe_allow_html=True)
+                        
+                        # Get the specific explanation for this lawyer
+                        lawyer_reasoning = "No specific analysis available for this lawyer."
+                        
+                        # Try different variations of the lawyer name that might be in the reasoning dict
+                        lawyer_name_variants = [
+                            lawyer['name'],  # Original name
+                            lawyer['name'].strip(),  # Stripped of whitespace
+                            ' '.join(lawyer['name'].split()),  # Normalized spaces
+                            lawyer['name'].replace('  ', ' ')  # Replace double spaces
+                        ]
+                        
+                        # Try to find a match in the reasoning dictionary
+                        if isinstance(reasoning, dict):
+                            # Try different variants of the name
+                            for name_variant in lawyer_name_variants:
+                                if name_variant in reasoning:
+                                    lawyer_reasoning = reasoning[name_variant]
+                                    break
+                            
+                            # If still not found, use the fallback
+                            if lawyer_reasoning == "No specific analysis available for this lawyer.":
+                                # Generate a fallback explanation for this specific lawyer
+                                lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
+                        else:
+                            # If reasoning is not a dictionary, generate a fallback explanation
+                            lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
+                        
+                        # Just add the reasoning section directly below the card
+                        st.markdown("### WHY THIS LAWYER IS AN EXCELLENT MATCH:")
+                        st.markdown(f"_{lawyer_reasoning}_", unsafe_allow_html=False)
+                
+                # Action buttons for results
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("📧 Email These Matches to Requester", use_container_width=True):
+                        st.success("Match results have been emailed to the requester!")
+                with col2:
+                    if st.button("📆 Schedule Consultation", use_container_width=True):
+                        st.success("Consultation has been scheduled with these lawyers!")
+                
+                # Add real-time feedback
+                add_realtime_feedback()
+
+    # Show exploration section when no search is active
+    if not st.session_state['search_pressed'] or not st.session_state['query']:
+        st.markdown("## Explore Available Legal Expertise")
+        
+        if data:
+            # Create a visual breakdown of legal expertise
+            all_skills = {}
+            for lawyer in data['lawyers']:
+                for skill, value in lawyer['skills'].items():
+                    if skill in all_skills:
+                        all_skills[skill] += value
+                    else:
+                        all_skills[skill] = value
+            
+            # Get top 20 skills by total points
+            top_skills = sorted(all_skills.items(), key=lambda x: x[1], reverse=True)[:20]
+            
+            # Show bar chart of top skills in scrollable container
+            st.markdown("### Most Common Legal Expertise Areas")
+            st.markdown('<div class="scroll-container">', unsafe_allow_html=True)
+            chart_data = pd.DataFrame({
+                'Skill': [s[0] for s in top_skills],
+                'Total Points': [s[1] for s in top_skills]
+            })
+            st.bar_chart(chart_data.set_index('Skill'))
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            st.markdown("### Instructions for Matching")
+            st.markdown("""
+            Enter your client's specific legal needs above or select a common query to find matching legal experts. 
+            Be as specific as possible about their requirements, including:
+            
+            - The type of legal expertise needed
+            - Any industry-specific requirements
+            - Geographic considerations (e.g., province-specific needs)
+            - The nature of the legal matter
+            - Timeframe and urgency
+            
+            For multi-criteria searches, use "AND" or "&" between criteria (e.g., "commercial contracts AND hospitality").
+            The system will match the query with lawyers who have relevant biographical information and self-reported expertise in those areas.
+            """)
+
+    # Footer
+    st.markdown("---")
+    st.markdown(
+        "This internal tool uses biographical information and self-reported expertise from lawyers in the database. "
+        "Results are sorted alphabetically and matches are based on biographical data with self-reported skill points as supporting evidence. "
+        f"Currently loaded: {len(data['lawyers']) if data else 0} lawyers with {len(data['unique_skills']) if data else 0} unique skills. "
+        "Last updated: April 18, 2025"
+    ), '', skill_name).strip()
+                    skills[skill_name] = value
+            except (ValueError, TypeError):
+                # If it's text, still include it with a default value
+                if str(value).strip():
+                    skill_name = col.strip()
+                    skills[skill_name] = 1.0
+    
+    # ENHANCED: Extract biographical information more aggressively
+    bio = {}
+    
+    # Enhanced bio field mapping with more patterns
+    bio_field_mapping = {
+        'level': ['level', 'title', 'position', 'rank', 'seniority'],
+        'call': ['call', 'bar', 'admission', 'admitted', 'called to bar'],
+        'jurisdiction': ['jurisdiction', 'province', 'state', 'admitted in'],
+        'location': ['location', 'office', 'city', 'based'],
+        'practice_areas': ['practice', 'area', 'specialization', 'expertise', 'practise', 'specializes', 'focus'],
+        'industry_experience': ['industry', 'sector', 'business', 'commercial', 'corporate'],
+        'languages': ['language', 'linguistic', 'speaks', 'fluent'],
+        'previous_in_house': ['in-house', 'in house', 'corporate counsel', 'general counsel', 'company'],
+        'previous_firms': ['firm', 'previous', 'prior', 'worked at', 'formerly'],
+        'education': ['education', 'school', 'university', 'degree', 'graduated', 'llb', 'jd', 'llm'],
+        'awards': ['award', 'recognition', 'honor', 'honour', 'accolade'],
+        'notable_items': ['notable', 'personal', 'detail', 'note', 'background', 'additional'],
+        'expert': ['expert', 'specialty', 'focus', 'specialized', 'expertise']
+    }
+    
+    # Initialize bio fields
+    for field in bio_field_mapping.keys():
+        bio[field] = ""
+    
+    # STRATEGY 1: Check bio_columns first (most likely to contain good data)
+    for col in structure['bio_columns']:
+        col_lower = col.lower()
+        value = str(row[col]) if pd.notna(row[col]) else ""
+        
+        if value.strip() and value.strip().lower() not in ['nan', 'none', 'null', '']:
+            # Find the best matching bio field
+            best_match = None
+            max_matches = 0
+            
+            for bio_field, patterns in bio_field_mapping.items():
+                matches = sum(1 for pattern in patterns if pattern in col_lower)
+                if matches > max_matches and not bio[bio_field]:
+                    max_matches = matches
+                    best_match = bio_field
+            
+            if best_match:
+                bio[best_match] = value
+    
+    # STRATEGY 2: Check ALL remaining columns for biographical data
+    for col in df.columns if 'df' in locals() else row.index:
+        if col not in structure['name_columns'] and col not in structure['email_columns'] and col not in structure['skill_columns']:
+            col_lower = col.lower()
+            value = str(row[col]) if pd.notna(row[col]) else ""
+            
+            if value.strip() and value.strip().lower() not in ['nan', 'none', 'null', '']:
+                # Try to match this to an unfilled bio field
+                for bio_field, patterns in bio_field_mapping.items():
+                    if not bio[bio_field]:  # Only if field is empty
+                        if any(pattern in col_lower for pattern in patterns):
+                            bio[bio_field] = value
+                            break
+    
+    # STRATEGY 3: Fill remaining empty fields with any remaining text data
+    remaining_text_fields = []
+    for col in structure['text_columns']:
+        value = str(row[col]) if pd.notna(row[col]) else ""
+        if value.strip() and value.strip().lower() not in ['nan', 'none', 'null', '']:
+            remaining_text_fields.append(value)
+    
+    # Fill empty bio fields with remaining text
+    empty_bio_fields = [field for field, value in bio.items() if not value]
+    for i, field in enumerate(empty_bio_fields):
+        if i < len(remaining_text_fields):
+            bio[field] = remaining_text_fields[i]
+    
+    return {
+        'name': name,
+        'email': email,
+        'skills': skills,
+        'bio': bio
+    }
+
+# MODIFIED: Single CSV reading function that gets everything from one file
+@lru_cache(maxsize=1)
+def load_lawyer_data():
+    try:
+        # Try to load from a single CSV file - try multiple possible names
+        possible_files = ['Caravel_New.csv', 'combined_unique.csv', 'lawyers.csv', 'data.csv']
+        df = None
+        loaded_file = None
+        
+        for filename in possible_files:
+            try:
+                df = pd.read_csv(filename)
+                loaded_file = filename
+                st.info(f"Successfully loaded data from {filename}")
+                break
+            except FileNotFoundError:
+                continue
+        
+        if df is None:
+            st.error("No CSV file found. Please ensure your CSV file is in the same directory.")
+            return None
+        
+        # Analyze the CSV structure
+        structure = detect_csv_structure(df)
+        
+        # Debug information
+        with st.expander("CSV Structure Analysis", expanded=False):
+            st.write(f"Loaded file: {loaded_file}")
+            st.write("Detected Structure:")
+            st.json(structure)
+            st.write("Column names in CSV:")
+            st.write(list(df.columns))
+            st.write("Sample of first few rows:")
+            st.dataframe(df.head(3))
+            st.write("Sample of bio-related columns:")
+            for col in structure['bio_columns'][:5]:  # Show first 5 bio columns
+                st.write(f"{col}: {df[col].iloc[0] if not df[col].empty else 'Empty'}")
+        
+        # Process the data - Extract ALL information from the single CSV
+        lawyers = []
+        practice_areas = ["Corporate", "Litigation", "IP", "Employment", "Privacy", "Finance", "Real Estate", "Tax"]
+        rate_ranges = ["$400-500/hr", "$500-600/hr", "$600-700/hr", "$700-800/hr", "$800-900/hr"]
+        
+        for index, row in df.iterrows():
+            try:
+                # Extract lawyer information from this single row
+                lawyer_info = extract_lawyer_info_flexible(row, structure)
+                
+                # Skip if no name found
+                if not lawyer_info['name'] or lawyer_info['name'].strip() == "":
+                    continue
+                
+                # Add mock data for fields that aren't in the CSV
+                lawyer_info['practice_area'] = np.random.choice(practice_areas)
+                lawyer_info['billable_rate'] = np.random.choice(rate_ranges)
+                lawyer_info['last_client'] = f"Client {np.random.randint(100, 999)}"
+                
+                # Try to infer practice area from bio data if available
+                if lawyer_info['bio'].get('practice_areas'):
+                    practice_areas_text = lawyer_info['bio']['practice_areas'].lower()
+                    if 'corporate' in practice_areas_text or 'commercial' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'Corporate'
+                    elif 'litigation' in practice_areas_text or 'dispute' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'Litigation'
+                    elif 'intellectual property' in practice_areas_text or 'ip' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'IP'
+                    elif 'employ' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'Employment'
+                    elif 'privacy' in practice_areas_text:
+                        lawyer_info['practice_area'] = 'Privacy'
+                
+                # Debug specific lawyer
+                if 'james' in lawyer_info['name'].lower() and 'oborne' in lawyer_info['name'].lower():
+                    with st.expander(f"Debug: {lawyer_info['name']} Data Extraction", expanded=False):
+                        st.write("Extracted Bio Data:")
+                        st.json(lawyer_info['bio'])
+                        st.write("Extracted Skills:")
+                        st.json(lawyer_info['skills'])
+                        st.write("Raw row data for bio columns:")
+                        for col in structure['bio_columns']:
+                            if col in df.columns:
+                                st.write(f"{col}: {row[col]}")
+                
+                lawyers.append(lawyer_info)
+                
+            except Exception as e:
+                st.warning(f"Error processing row {index}: {e}")
+                continue
+        
+        # Create unique skills list
+        all_skills = set()
+        for lawyer in lawyers:
+            all_skills.update(lawyer['skills'].keys())
+        
+        return {
+            'lawyers': lawyers,
+            'unique_skills': list(all_skills),
+            'structure': structure,
+            'loaded_file': loaded_file
+        }
+        
+    except Exception as e:
+        st.error(f"Error loading data: {e}")
+        import traceback
+        st.error(f"Full error: {traceback.format_exc()}")
         return None
 
 # Keep all the other functions exactly the same
