@@ -295,6 +295,7 @@ if 'full_claude_response' not in st.session_state:
 def set_query(text):
     st.session_state['query'] = text
     st.session_state['search_pressed'] = True
+    st.rerun()
 
 for query in recent_queries:
     if st.sidebar.button(query, key=f"recent_{query}", help=f"Use this recent query: {query}"):
@@ -1365,7 +1366,9 @@ else:
         col_idx = i % 3
         with cols[col_idx]:
             if st.button(preset_query, key=f"preset_{i}"):
-                set_query(preset_query)
+                st.session_state['query'] = preset_query
+                st.session_state['search_pressed'] = True
+                st.rerun()
 
     # Update query in session state from text area
     if query:
@@ -1418,133 +1421,109 @@ else:
                     matched_bio_reasons = match.get('matched_bio_reasons', [])
                     matched_blurb_reasons = match.get('matched_blurb_reasons', [])
                     
+                    # Get bio data
+                    bio = lawyer.get('bio', {})
+                    
+                    # Create a cleaner card layout using Streamlit components instead of raw HTML
                     with st.container():
-                        # Get bio data
-                        bio = lawyer.get('bio', {})
+                        # Main lawyer info header
+                        st.markdown(f"### {lawyer['name']}")
+                        st.markdown(f"📧 {lawyer['email']} | 🏢 {lawyer['practice_area']}")
                         
-                        # Use raw HTML string concatenation to avoid Streamlit escaping issues
-                        html_output = f"""
-                        <div class="lawyer-card">
-                            <div class="lawyer-name">
-                                {lawyer['name']}
-                            </div>
-                            <div class="lawyer-email">{lawyer['email']}</div>
-                            <div class="practice-area">Practice Area: {lawyer['practice_area']}</div>
-                        """
-                        
-                        # PRIORITY: Show bio.blurb first if available (CLEANED UP)
+                        # Bio.blurb section (highest priority)
                         if bio.get('blurb'):
-                            # Truncate blurb to avoid duplication and clean display
                             clean_blurb = bio['blurb'][:400] + ('...' if len(bio['blurb']) > 400 else '')
-                            html_output += f'''
-                            <div class="bio-blurb">
-                                <strong>🎯 Bio Profile:</strong><br/>
-                                {clean_blurb}
-                            </div>
-                            '''
+                            st.markdown("**🎯 Biographical Profile:**")
+                            st.info(clean_blurb)
                         
-                        # Create biographical info section
-                        bio_html = ""
-                        if bio:
-                            bio_html += '<div class="bio-section">'
-                            if bio.get('level'):
-                                bio_html += f'<div class="bio-level">{bio["level"]}</div>'
+                        # Other biographical details in columns
+                        if any([bio.get('level'), bio.get('call'), bio.get('jurisdiction'), bio.get('location')]):
+                            bio_col1, bio_col2 = st.columns(2)
+                            with bio_col1:
+                                if bio.get('level'):
+                                    st.markdown(f"**Level:** {bio['level']}")
+                                if bio.get('call'):
+                                    st.markdown(f"**Called to Bar:** {bio['call']}")
+                            with bio_col2:
+                                if bio.get('jurisdiction'):
+                                    st.markdown(f"**Jurisdiction:** {bio['jurisdiction']}")
+                                if bio.get('location'):
+                                    st.markdown(f"**Location:** {bio['location']}")
+                        
+                        # Experience and education
+                        if bio.get('previous_in_house'):
+                            st.markdown(f"**In-House Experience:** {bio['previous_in_house']}")
+                        if bio.get('previous_firms'):
+                            st.markdown(f"**Previous Firms:** {bio['previous_firms']}")
+                        if bio.get('education'):
+                            st.markdown(f"**Education:** {bio['education']}")
+                        if bio.get('industry_experience'):
+                            st.markdown(f"**Industry Experience:** {bio['industry_experience']}")
+                        
+                        # Match information
+                        match_col1, match_col2 = st.columns(2)
+                        with match_col1:
+                            # Show what matched in bio.blurb
+                            if matched_blurb_reasons:
+                                st.markdown("**🎯 Bio.Blurb Matches:**")
+                                for reason in matched_blurb_reasons:
+                                    st.markdown(f"- {reason.get('match_type', 'general')} match")
                             
-                            bio_details = []
-                            if bio.get('call'):
-                                bio_details.append(f'Called to Bar: {bio["call"]}')
-                            if bio.get('jurisdiction'):
-                                bio_details.append(f'Jurisdiction: {bio["jurisdiction"]}')
-                            if bio.get('location'):
-                                bio_details.append(f'Location: {bio["location"]}')
+                            # Show what matched in other bio fields
+                            if matched_bio_reasons:
+                                st.markdown("**📋 Biographical Matches:**")
+                                for reason in matched_bio_reasons:
+                                    field_name = reason['field'].replace('_', ' ').title()
+                                    st.markdown(f"- {field_name}: {reason.get('match_type', 'general')} match")
+                        
+                        with match_col2:
+                            # Match scores
+                            blurb_score = match.get('blurb_score', 0)
+                            bio_score = match.get('bio_score', 0)
+                            skill_score = match.get('skill_score', 0)
+                            total_score = match.get('score', 0)
                             
-                            if bio_details:
-                                bio_html += f'<div class="bio-details">{" | ".join(bio_details)}</div>'
-                                
-                            if bio.get('previous_in_house'):
-                                bio_html += f'<div class="bio-experience"><strong>In-House Experience:</strong> {bio["previous_in_house"]}</div>'
-                            if bio.get('previous_firms'):
-                                bio_html += f'<div class="bio-experience"><strong>Previous Firms:</strong> {bio["previous_firms"]}</div>'
-                            if bio.get('education'):
-                                bio_html += f'<div class="bio-education"><strong>Education:</strong> {bio["education"]}</div>'
-                                
-                            bio_html += '</div>'
-                        
-                        # Add the bio section to the HTML output
-                        html_output += bio_html
-                        
-                        # Add matched blurb reasons section (highest priority)
-                        if matched_blurb_reasons:
-                            html_output += '<div style="margin-top: 10px;"><strong>🎯 Bio.Blurb Matches:</strong><br/>'
-                            for reason in matched_blurb_reasons:
-                                match_type = reason.get('match_type', 'general')
-                                html_output += f'<span class="bio-match-tag">Bio.Blurb ({match_type})</span> '
-                            html_output += '</div>'
-                        
-                        # Add matched bio reasons section
-                        if matched_bio_reasons:
-                            html_output += '<div style="margin-top: 10px;"><strong>Matched Biographical Factors:</strong><br/>'
-                            for reason in matched_bio_reasons:
-                                field_name = reason['field'].replace('_', ' ').title()
-                                match_type = reason.get('match_type', 'general')
-                                html_output += f'<span class="bio-match-tag">{field_name} ({match_type})</span> '
-                            html_output += '</div>'
-                        
-                        # Add match scores for transparency
-                        blurb_score = match.get('blurb_score', 0)
-                        bio_score = match.get('bio_score', 0)
-                        skill_score = match.get('skill_score', 0)
-                        total_score = match.get('score', 0)
-                        
-                        html_output += f"""
-                            <div style="margin-top: 10px;">
-                                <strong>Match Scores:</strong>
-                                Bio.Blurb: {blurb_score} | Bio: {bio_score} | Skills: {skill_score} | Total: {total_score}
-                            </div>
-                        """
-                        
-                        # Add skill tags as supporting evidence
-                        if matched_skills:
-                            html_output += f"""
-                                <div style="margin-top: 10px;">
-                                    <strong>Supporting Skill Evidence:</strong><br/>
-                                    {"".join([f'<span class="skill-tag">{skill["skill"]}: {skill["value"]} ({skill.get("match_type", "general")})</span>' for skill in matched_skills])}
-                                </div>
-                            """
-                        
-                        html_output += "</div>"
-                        st.markdown(html_output, unsafe_allow_html=True)
+                            st.markdown("**📊 Match Scores:**")
+                            st.markdown(f"- Bio.Blurb: {blurb_score}")
+                            st.markdown(f"- Biographical: {bio_score}")
+                            st.markdown(f"- Skills: {skill_score}")
+                            st.markdown(f"- **Total: {total_score}**")
+                            
+                            # Supporting skills
+                            if matched_skills:
+                                st.markdown("**🔧 Supporting Skills:**")
+                                for skill in matched_skills[:3]:  # Show top 3
+                                    st.markdown(f"- {skill['skill']}: {skill['value']}")
                         
                         # Get the specific explanation for this lawyer
                         lawyer_reasoning = "No specific analysis available for this lawyer."
                         
                         # Try different variations of the lawyer name that might be in the reasoning dict
                         lawyer_name_variants = [
-                            lawyer['name'],  # Original name
-                            lawyer['name'].strip(),  # Stripped of whitespace
-                            ' '.join(lawyer['name'].split()),  # Normalized spaces
-                            lawyer['name'].replace('  ', ' ')  # Replace double spaces
+                            lawyer['name'],
+                            lawyer['name'].strip(),
+                            ' '.join(lawyer['name'].split()),
+                            lawyer['name'].replace('  ', ' ')
                         ]
                         
                         # Try to find a match in the reasoning dictionary
                         if isinstance(reasoning, dict):
-                            # Try different variants of the name
                             for name_variant in lawyer_name_variants:
                                 if name_variant in reasoning:
                                     lawyer_reasoning = reasoning[name_variant]
                                     break
                             
-                            # If still not found, use the fallback
                             if lawyer_reasoning == "No specific analysis available for this lawyer.":
-                                # Generate a bio-prioritized fallback explanation for this specific lawyer
                                 lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
                         else:
-                            # If reasoning is not a dictionary, generate a bio-prioritized fallback explanation
                             lawyer_reasoning = generate_fallback_explanation(lawyer, bio, matched_skills)
                         
-                        # Add the reasoning section with emphasis on bio priority
-                        st.markdown("### WHY THIS LAWYER IS AN EXCELLENT MATCH:")
-                        st.markdown(f"_{lawyer_reasoning}_", unsafe_allow_html=False)
+                        # Reasoning section
+                        st.markdown("**🎯 WHY THIS LAWYER IS AN EXCELLENT MATCH:**")
+                        st.markdown(f"> {lawyer_reasoning}")
+                        
+                        # Add separator
+                        st.markdown("---")
                 
                 # Action buttons for results
                 col1, col2 = st.columns(2)
